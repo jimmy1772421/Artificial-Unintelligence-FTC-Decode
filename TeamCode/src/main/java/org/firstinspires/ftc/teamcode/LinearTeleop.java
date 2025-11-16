@@ -28,11 +28,15 @@ public class LinearTeleop extends LinearOpMode {
         waitForStart();
 
         while(opModeIsActive()){
+            /*
             drivetrain.drive(
                     gamepad1.left_stick_x,   // strafe
                     gamepad1.left_stick_y,   // forward/back
                     gamepad1.right_stick_x   // rotate
             );
+            *
+/             */
+
             shooter.update(gamepad1.a);
 
             //Telemetry

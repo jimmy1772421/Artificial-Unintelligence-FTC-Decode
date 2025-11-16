@@ -1,17 +1,20 @@
 package org.firstinspires.ftc.teamcode.subsystems;
+
 import com.qualcomm.robotcore.hardware.DcMotor;
 import com.qualcomm.robotcore.hardware.DcMotorEx;
 import com.qualcomm.robotcore.hardware.DcMotorSimple;
 import com.qualcomm.robotcore.hardware.HardwareMap;
 
 public class ShooterSubsystem {
-    private final DcMotor motorOne;
+    private static final double MAX_TICKS_PER_SECOND = 2800.0; // 6000 RPM goBILDA motor
+
+    private final DcMotorEx motorOne;
     private boolean isOn = false;
     private boolean lastButton = false;
 
     public ShooterSubsystem(HardwareMap hardwareMap) {
 
-        motorOne = hardwareMap.get(DcMotor.class,"motor_one");
+        motorOne = hardwareMap.get(DcMotorEx.class,"motor_one");
 
         motorOne.setDirection(DcMotorSimple.Direction.FORWARD);
 
@@ -26,7 +29,7 @@ public class ShooterSubsystem {
         // Edge detection: button just went from not pressed -> pressed
         if (buttonPressed && !lastButton) {
             isOn = !isOn;
-            motorOne.setPower(isOn ? 1.0 : 0.0);
+            motorOne.setVelocity(isOn ? MAX_TICKS_PER_SECOND : 0.0);
         }
 
         lastButton = buttonPressed;
@@ -38,6 +41,6 @@ public class ShooterSubsystem {
 
     public void stop() {
         isOn = false;
-        motorOne.setPower(0.0);
+        motorOne.setVelocity(0.0);
     }
 }

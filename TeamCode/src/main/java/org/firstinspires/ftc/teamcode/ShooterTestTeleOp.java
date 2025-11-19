@@ -10,18 +10,24 @@ public class ShooterTestTeleOp extends LinearOpMode {
     private ShooterSubsystem shooter;
 
     @Override
-    public void runOpMode() throws InterruptedException {
+    public void runOpMode() {
         shooter = new ShooterSubsystem(hardwareMap);
 
         waitForStart();
 
         while (opModeIsActive()) {
-            boolean buttonPressed = gamepad1.a;  // A toggles shooter
-            double gamepad1LeftY = gamepad1.left_stick_y;
-            //shooter.update(buttonPressed);
-            shooter.joystick(buttonPressed, gamepad1LeftY);
+            // A = toggle on/off
+            // dpad_up = +250 RPM
+            // dpad_down = -250 RPM
+            shooter.update(
+                    gamepad1.a,
+                    gamepad1.dpad_up,
+                    gamepad1.dpad_down
+            );
 
-            telemetry.addData("Shooter on?", shooter.isOn());
+            telemetry.addData("Shooter On", shooter.isOn());
+            telemetry.addData("Target RPM", "%.0f", shooter.getTargetRpm());
+            telemetry.addData("Current RPM (est)", "%.0f", shooter.getCurrentRpmEstimate());
             telemetry.update();
         }
     }

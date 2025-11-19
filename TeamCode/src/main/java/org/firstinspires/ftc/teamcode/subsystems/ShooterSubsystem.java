@@ -6,61 +6,85 @@ import com.qualcomm.robotcore.hardware.DcMotorSimple;
 import com.qualcomm.robotcore.hardware.HardwareMap;
 
 public class ShooterSubsystem {
-    private static final double MAX_TICKS_PER_SECOND = 2800.0; // 6000 RPM goBILDA motor
 
-    private static double adjustableSpeed = 0.0;
-    private final DcMotorEx motorOne;
+    // goBILDA 6000 RPM motor
+    private static final double TICKS_PER_REV = 28.0;
+    private static final double PHYSICAL_MAX_RPM = 6000.0;
+    private static final double RPM_STEP = 250.0;
+
+    // Internal helpers
+    private static double rpmToTicksPerSec(double rpm) {
+        return rpm * TICKS_PER_REV / 60.0;
+    }
+    private static double ticksPerSecToRpm(double tps) {
+        return tps * 60.0 / TICKS_PER_REV;
+    }
+
+    private final DcMotorEx motor;
     private boolean isOn = false;
-    private boolean lastButton = false;
+
+    // Target speed controlled ONLY by buttons
+    private double targetRpm = 0.0; // start at 0; bump with buttons
+
+    // Edge detection
+    private boolean lastToggleBtn = false;
+    private boolean lastIncBtn = false;
+    private boolean lastDecBtn = false;
 
     public ShooterSubsystem(HardwareMap hardwareMap) {
-
-        motorOne = hardwareMap.get(DcMotorEx.class,"motor_one");
-
-        motorOne.setDirection(DcMotorSimple.Direction.FORWARD);
-
-        motorOne.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.FLOAT);
-
-        motorOne.setMode(DcMotor.RunMode.RUN_USING_ENCODER);
-        //motorOne.setMode(DcMotor.RunMode.STOP_AND_RESET_ENCODER);
-        //resets encoder ticks
+        motor = hardwareMap.get(DcMotorEx.class, "motor_one");
+        motor.setDirection(DcMotorSimple.Direction.FORWARD);
+        motor.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.FLOAT);
+        motor.setMode(DcMotor.RunMode.RUN_USING_ENCODER);
     }
 
-    public void update(boolean buttonPressed) {
-        // Edge detection: button just went from not pressed -> pressed
-        if (buttonPressed && !lastButton) {
-            isOn = !isOn;
-            motorOne.setVelocity(isOn ? MAX_TICKS_PER_SECOND : 0.0);
-        }
-
-        lastButton = buttonPressed;
-    }
-
-    public void joystick(boolean buttonPressed, double gamepad1LeftY) {
-        // Toggle on/off on rising edge
-        if (buttonPressed && !lastButton) {
+    /**
+     * Call this once per loop with the three buttons you map:
+     * @param togglePressed      e.g., gamepad1.a (rising edge toggles on/off)
+     * @param increasePressed    e.g., gamepad1.dpad_up (rising edge +250 RPM)
+     * @param decreasePressed    e.g., gamepad1.dpad_down (rising edge -250 RPM)
+     */
+    public void update(boolean togglePressed, boolean increasePressed, boolean decreasePressed) {
+        // Toggle on rising edge
+        if (togglePressed && !lastToggleBtn) {
             isOn = !isOn;
         }
 
-        // If on, use joystick to control speed
+        // Adjust target RPM on rising edges
+        if (increasePressed && !lastIncBtn) {
+            targetRpm = clampRpm(targetRpm + RPM_STEP);
+        }
+        if (decreasePressed && !lastDecBtn) {
+            targetRpm = clampRpm(targetRpm - RPM_STEP);
+        }
+
+        // Apply output
         if (isOn) {
-            adjustableSpeed = gamepad1LeftY * MAX_TICKS_PER_SECOND;
-            motorOne.setVelocity(adjustableSpeed);
+            motor.setVelocity(rpmToTicksPerSec(targetRpm));
         } else {
-            motorOne.setVelocity(0.0);
+            motor.setVelocity(0.0);
         }
 
-        lastButton = buttonPressed;
+        // Latch buttons
+        lastToggleBtn = togglePressed;
+        lastIncBtn = increasePressed;
+        lastDecBtn = decreasePressed;
     }
 
-
-
-    public boolean isOn() {
-        return isOn;
+    private double clampRpm(double rpm) {
+        if (rpm < 0) return 0;
+        if (rpm > PHYSICAL_MAX_RPM) return PHYSICAL_MAX_RPM;
+        return rpm;
     }
+
+    // Telemetry helpers
+    public boolean isOn() { return isOn; }
+    public double getTargetRpm() { return targetRpm; }
+    public double getCurrentRpmEstimate() { return ticksPerSecToRpm(motor.getVelocity()); }
 
     public void stop() {
         isOn = false;
-        motorOne.setVelocity(0.0);
+        targetRpm = 0.0;
+        motor.setVelocity(0.0);
     }
 }

@@ -37,7 +37,7 @@ public class LinearTeleop extends LinearOpMode {
             *
 /             */
 
-            shooter.update(gamepad1.a);
+            //shooter.update(gamepad1.a);
 
             //Telemetry
             //shooter

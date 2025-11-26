@@ -5,6 +5,10 @@ import com.qualcomm.robotcore.hardware.AnalogInput;
 import com.qualcomm.robotcore.hardware.DcMotor;
 import com.qualcomm.robotcore.hardware.DcMotorEx;
 import com.qualcomm.robotcore.hardware.HardwareMap;
+import com.qualcomm.robotcore.hardware.NormalizedColorSensor;
+import android.graphics.Color;
+
+
 
 import org.firstinspires.ftc.robotcore.external.Telemetry;
 
@@ -156,22 +160,45 @@ public class SpindexerSubsystem {
     // ===== Color / ball handling =====
 
     private Ball detectBallColor() {
+        // Raw RGB from REV Color Sensor V3
         int r = intakeColor.red();
         int g = intakeColor.green();
         int b = intakeColor.blue();
 
-        // GREEN: G is clearly dominant
-        if (g > r * 1.2 && g > b * 1.2) {
+        // If everything is very dark, treat as no ball
+        if (r + g + b < 50) {
+            return Ball.UNKNOWN;
+        }
+
+        // Convert to HSV using Android's Color utility
+        float[] hsv = new float[3];
+        // Color.rgb expects 0–255, sensor values are usually in that ballpark already
+        int rgb = Color.rgb(r, g, b);
+        Color.colorToHSV(rgb, hsv);
+
+        float hue = hsv[0];   // 0..360
+        float sat = hsv[1];   // 0..1
+        float val = hsv[2];   // 0..1
+
+        // Filter out very dark or desaturated readings
+        if (val < 0.1f) return Ball.UNKNOWN;
+        if (sat < 0.3f) return Ball.UNKNOWN;
+
+        // ---- Initial ranges (tune after testing!) ----
+        // Green ~ 80–160°
+        if (hue >= 80f && hue <= 160f) {
             return Ball.GREEN;
         }
 
-        // PURPLE: R and B high, G relatively low
-        if (r > g * 1.1 && b > g * 1.1) {
+        // Purple / violet ~ 260–320°
+        if (hue >= 260f && hue <= 320f) {
             return Ball.PURPLE;
         }
 
+
         return Ball.UNKNOWN;
     }
+
 
     /**
      * Called when X is pressed:

@@ -6,9 +6,7 @@ import org.firstinspires.ftc.teamcode.subsystems.ShooterSubsystem;
 import org.firstinspires.ftc.teamcode.subsystems.LoaderSubsystem;
 import org.firstinspires.ftc.teamcode.subsystems.IntakeSubsystem;
 import org.firstinspires.ftc.teamcode.subsystems.SpindexerSubsystem;
-import com.qualcomm.robotcore.hardware.NormalizedColorSensor;
-import org.firstinspires.ftc.robotcore.external.navigation.NormalizedRGBA;
-import android.graphics.Color;
+
 @TeleOp(name = "Shooter Test", group = "Test")
 public class ShooterTestTeleOp extends LinearOpMode {
 

@@ -153,13 +153,13 @@ public class SpindexerSubsystem {
     }
 
     private void runToAngleBlocking(double angleDeg, double power) {
-        int target = angleToTicks(angleDeg);
+        int target = shortestTicksToAngle(angleDeg);
         motor.setTargetPosition(target);
         motor.setMode(DcMotor.RunMode.RUN_TO_POSITION);
         motor.setPower(power);
 
         long startTime = System.currentTimeMillis();
-        long timeoutMs = 700;  // max time we’ll wait for this move
+        long timeoutMs = 700;  // tweak as needed
 
         while (motor.isBusy()
                 && (System.currentTimeMillis() - startTime) < timeoutMs) {
@@ -174,6 +174,8 @@ public class SpindexerSubsystem {
         motor.setMode(DcMotor.RunMode.RUN_USING_ENCODER);
     }
 
+
+
     // === PUBLIC ANGLE API ===
 
     /** Move to an absolute angle (0, 30, 180, etc.) blocking up to timeout. */
@@ -187,26 +189,27 @@ public class SpindexerSubsystem {
 
     /** Non-blocking move to an absolute angle. */
     public void moveToAngleAsync(double angleDeg, double power) {
-        int target = angleToTicks(angleDeg);
+        int target = shortestTicksToAngle(angleDeg);
         motor.setTargetPosition(target);
         motor.setMode(DcMotor.RunMode.RUN_TO_POSITION);
         motor.setPower(power);
     }
-
-    private double slotCenterAngleAtIntake(int slotIndex) {
-        return INTAKE_ANGLE + slotIndex * DEGREES_PER_SLOT;
-    }
-
     private void moveSlotToIntake(int slotIndex, double power) {
-        double angle = slotCenterAngleAtIntake(slotIndex);
-        runToAngleBlocking(angle, power);
+        double angle = slotCenterAngleAtIntake(slotIndex); // 0, 120, 240
+        runToAngleBlocking(angle, power);                  // shortest path between slots
         intakeIndex = slotIndex;
     }
 
     private void moveSlotToLoad(int slotIndex, double power) {
         double angle = slotCenterAngleAtIntake(slotIndex) + (LOAD_ANGLE - INTAKE_ANGLE);
-        runToAngleBlocking(angle, power);
+        runToAngleBlocking(angle, power);                  // also shortest path
     }
+
+
+    private double slotCenterAngleAtIntake(int slotIndex) {
+        return INTAKE_ANGLE + slotIndex * DEGREES_PER_SLOT;
+    }
+
 
     // ===== Color / ball handling =====
 
@@ -272,10 +275,11 @@ public class SpindexerSubsystem {
                 int nextIndex = (intakeIndex + 1) % SLOT_COUNT;
 
                 double angle = slotCenterAngleAtIntake(nextIndex);
-                int target = angleToTicks(angle);
+                int target = shortestTicksToAngle(angle);
                 motor.setTargetPosition(target);
                 motor.setMode(DcMotor.RunMode.RUN_TO_POSITION);
                 motor.setPower(MOVE_POWER);
+
 
                 intakeIndex = nextIndex;
             }
@@ -351,10 +355,14 @@ public class SpindexerSubsystem {
     }
 
     public boolean isAtMid() {
-        double angle = slotCenterAngleAtIntake(ejectStartIndex) + (LOAD_ANGLE - INTAKE_ANGLE);
-        int target = angleToTicks(angle);
-        return Math.abs(motor.getCurrentPosition() - target) < TOLERANCE_TICKS;
+        double desiredAngle = slotCenterAngleAtIntake(ejectStartIndex) + (LOAD_ANGLE - INTAKE_ANGLE);
+        double currentAngle = getCurrentAngleDeg();
+        double diff = smallestAngleDiff(currentAngle, normalizeAngle(desiredAngle));
+        // translate angle tolerance to ticks, or just use a degree threshold:
+        double tolDeg = 360.0 * TOLERANCE_TICKS / TICKS_PER_REV; // same as your tick tolerance
+        return Math.abs(diff) < tolDeg;
     }
+
 
     // ==== Debug getters for telemetry ====
 
@@ -422,4 +430,28 @@ public class SpindexerSubsystem {
         telemetry.addData("Abs offset", "%.1f deg", ABS_MECH_OFFSET_DEG);
         telemetry.addData("Intake slot index", intakeIndex);
     }
+    /**
+     * Compute the motor tick target for a given angle so that
+     * the motor takes the SHORTEST path from its current tick position.
+     */
+    private int shortestTicksToAngle(double angleDeg) {
+        double norm = normalizeAngle(angleDeg);
+
+        // "Canonical" tick for this angle (somewhere on the infinite shaft)
+        double desiredRevs = norm / 360.0;
+        int baseTicks = zeroTicks + (int)Math.round(desiredRevs * TICKS_PER_REV);
+
+        int current = motor.getCurrentPosition();
+        int revTicks = (int)Math.round(TICKS_PER_REV);
+
+        int diff = baseTicks - current;  // how far we'd move if we used baseTicks directly
+
+        // Shift by an integer number of full revs so |diff'| is minimized
+        // k ≈ diff / revTicks, rounded to nearest integer
+        int k = (int)Math.round((double)diff / revTicks);
+
+        int bestTarget = baseTicks - k * revTicks;  // new target with minimal travel
+        return bestTarget;
+    }
+
 }

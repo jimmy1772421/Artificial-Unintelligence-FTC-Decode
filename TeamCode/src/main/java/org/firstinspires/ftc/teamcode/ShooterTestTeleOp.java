@@ -9,12 +9,13 @@ import org.firstinspires.ftc.teamcode.subsystems.LoaderSubsystem;
 import org.firstinspires.ftc.teamcode.subsystems.IntakeSubsystem;
 import org.firstinspires.ftc.teamcode.subsystems.SpindexerSubsystem;
 import org.firstinspires.ftc.teamcode.subsystems.TurretSubsystem;
+import org.firstinspires.ftc.teamcode.subsystems.IntakeSubsystem_Motor;
 
 @TeleOp(name = "Shooter Test", group = "Test")
 public class ShooterTestTeleOp extends LinearOpMode {
 
     private ShooterSubsystem shooter;
-    private IntakeSubsystem intake;
+    private IntakeSubsystem_Motor intake;
     private SpindexerSubsystem spindexer;
     private LoaderSubsystem loader;
     private DrivetrainSubsystem drive;
@@ -37,11 +38,13 @@ public class ShooterTestTeleOp extends LinearOpMode {
     //turret buttons
     private boolean prevA, prevB, prevX, prevDpadL, prevDpadR, prevLeftBumper, prevRightBumper;
 
+    boolean readyForIntake = true;
+
     @Override
     public void runOpMode() {
         shooter   = new ShooterSubsystem(hardwareMap);
         loader    = new LoaderSubsystem(hardwareMap);
-        intake    = new IntakeSubsystem(hardwareMap);
+        intake    = new IntakeSubsystem_Motor(hardwareMap);
         spindexer = new SpindexerSubsystem(hardwareMap);
         drive = new DrivetrainSubsystem(hardwareMap);
         turret = new TurretSubsystem(hardwareMap);
@@ -82,6 +85,7 @@ public class ShooterTestTeleOp extends LinearOpMode {
             drive.setDriveScale(slowMode ? 0.4 : 1.0);
 
             telemetry.addData("Drive Scale", drive.getDriveScale());
+            drive.drive(leftX,leftY,rightX);
 
             // ===== LOADER (manual B) =====
             /*
@@ -95,7 +99,7 @@ public class ShooterTestTeleOp extends LinearOpMode {
 
             // ===== INTAKE =====
             if (intakeOn) {
-                intake.StartIntake();
+                intake.startIntake();
             } else {
                 intake.stopIntake();
             }
@@ -155,7 +159,7 @@ public class ShooterTestTeleOp extends LinearOpMode {
             // ===== TELEMETRY =====
             SpindexerSubsystem.Ball[] s = spindexer.getSlots();
 
-            boolean readyForIntake = !spindexer.isEjecting() && !spindexer.isAutoRotating();
+            readyForIntake = !spindexer.isEjecting() && !spindexer.isAutoRotating();
             telemetry.addData("Spd intakeSlot", spindexer.getIntakeSlotIndex());
             telemetry.addData("Spd readyForIntake", readyForIntake);
             telemetry.addData("Spd full", spindexer.isFull());

@@ -14,7 +14,7 @@ public class IntakeSubsystem {
         rightServo = hardwareMap.get(CRServo.class, "rightIntakeServo");
 
         leftServo.setDirection(CRServo.Direction.FORWARD);
-        rightServo.setDirection(CRServo.Direction.FORWARD);
+        rightServo.setDirection(CRServo.Direction.REVERSE);
     }
 
     public void stopIntake(){
@@ -29,7 +29,7 @@ public class IntakeSubsystem {
 
     }
 
-    public void StartIntake (){
+    public void startIntake (){
         leftServo.setPower(intakeSpeed);
         rightServo.setPower(intakeSpeed);
     }

@@ -41,6 +41,13 @@ public class ShooterTestTeleOp extends LinearOpMode {
     boolean readyForIntake = true;
     private long shooterSpinDownDeadline = 0;   // time (ms) until we turn shooter off
     private boolean lastEjecting = false;       // for edge-detect on eject end
+    private int driverPatternTag = 0;  // 0 = fastest, 21/22/23 = pattern
+    private boolean prev2Up, prev2Right, prev2Left, prev2Down;
+
+    private boolean prevFieldToggle = false;   // for near/far toggle button
+
+
+
 
 
     @Override
@@ -63,6 +70,15 @@ public class ShooterTestTeleOp extends LinearOpMode {
         spindexer.homeToIntake();
 
         while (opModeIsActive()) {
+
+            // ===== SHOOTER FIELD (NEAR/FAR) TOGGLE =====
+            // Click left stick on gamepad1 to toggle between near (0) and far (1)
+            boolean fieldToggle = gamepad1.left_stick_button;
+            if (fieldToggle && !prevFieldToggle) {
+                fieldPos = (fieldPos == 0) ? 1 : 0;
+            }
+            prevFieldToggle = fieldToggle;
+
             // ===== SHOOTER =====
             shooter.update(
                     shooterOn,
@@ -147,10 +163,44 @@ public class ShooterTestTeleOp extends LinearOpMode {
 
             turret.update();
 
+
+            //shooter timing
+            // ===== SPINDEXER / PATTERN INPUT =====
+
+// Y on gamepad1 starts eject sequence
             boolean yEdge = gamepad1.y && !lastY;
             lastY = gamepad1.y;
-            //shooter timing
-            spindexerIsFull = spindexer.update(telemetry, loader, yEdge);
+
+// driver 2 chooses pattern tag with dpad:
+//  up    -> 23 (P,P,G)
+//  right -> 22 (P,G,P)
+//  left  -> 21 (G,P,P)
+//  down  -> 0  (no pattern / fastest)
+            boolean dUp2    = gamepad2.dpad_up;
+            boolean dRight2 = gamepad2.dpad_right;
+            boolean dLeft2  = gamepad2.dpad_left;
+            boolean dDown2  = gamepad2.dpad_down;
+
+            if (dUp2 && !prev2Up) {
+                driverPatternTag = 23;
+            }
+            if (dRight2 && !prev2Right) {
+                driverPatternTag = 22;
+            }
+            if (dLeft2 && !prev2Left) {
+                driverPatternTag = 21;
+            }
+            if (dDown2 && !prev2Down) {
+                driverPatternTag = 0; // fastest / no pattern
+            }
+
+            prev2Up    = dUp2;
+            prev2Right = dRight2;
+            prev2Left  = dLeft2;
+            prev2Down  = dDown2;
+
+// Call spindexer.update with the pattern override
+            spindexerIsFull = spindexer.update(telemetry, loader, yEdge, driverPatternTag);
 
 // --- Eject / shooter timing logic ---
             boolean ejecting   = spindexer.isEjecting();
@@ -207,6 +257,11 @@ public class ShooterTestTeleOp extends LinearOpMode {
             telemetry.addData("Shooter On", shooter.isOn());
             telemetry.addData("Target RPM", "%.0f", shooter.getTargetRpm());
             telemetry.addData("Current RPM (est)", "%.0f", shooter.getCurrentRpmEstimate());
+            telemetry.addData("Pattern Tag", driverPatternTag);
+            telemetry.addData("Pattern Order", spindexer.getGamePattern());
+            telemetry.addData("Field Mode", (fieldPos == 0) ? "NEAR" : "FAR");
+
+
 
             telemetry.update();
         }

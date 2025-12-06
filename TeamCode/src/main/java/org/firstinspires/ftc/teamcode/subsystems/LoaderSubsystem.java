@@ -11,7 +11,7 @@ public class LoaderSubsystem {
 
     // crop range on the physical servo
     private static final double SERVO_MIN = 0.32;
-    private static final double SERVO_MAX = 0.5;
+    private static final double SERVO_MAX = 0.55;
 
     // logical positions (0–1 BEFORE scaling)
     private static final double DEFAULT_POS = 0.0; // -> 0.3 physical

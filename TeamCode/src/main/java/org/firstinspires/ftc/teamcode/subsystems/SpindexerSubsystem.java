@@ -21,6 +21,14 @@ public class SpindexerSubsystem {
         UNKNOWN
     }
 
+    // Internal helper classification
+    private enum RawColor {
+        RED,
+        GREEN,
+        PURPLE
+    }
+
+
     // ==== MOTOR / GEOMETRY CONSTANTS ====
 
     // goBILDA 435 rpm YJ integrated encoder
@@ -268,11 +276,14 @@ public class SpindexerSubsystem {
 
 
     /**
-     * Classify color from a single REV color sensor (GREEN / PURPLE / UNKNOWN).
+     // ===== Color / ball handling =====
+
+     /**
+     * Returns true if EITHER color sensor sees something within the distance threshold.
+     * We use this just to detect "something is near the intake".
      */
-// Returns true if either sensor sees something close
     private boolean isBallPresent() {
-        final double THRESH_CM = 3.0; // a bit tighter than 5.0
+        final double THRESH_CM = 5.0;
 
         double d1 = intakeColor.getDistance(DistanceUnit.CM);
         double d2 = intakeColor2.getDistance(DistanceUnit.CM);
@@ -283,36 +294,68 @@ public class SpindexerSubsystem {
         return present1 || present2;
     }
 
-    // Classify color from a single sensor
-    private Ball classifyColor(RevColorSensorV3 sensor) {
+    /**
+     * Classify raw sensor reading into RED, GREEN, or PURPLE based on
+     * normalized RGB ratios.
+     *
+     * - RED:  r clearly > g and b  → spindexer arm / junk
+     * - GREEN: g clearly > r and b → green ball
+     * - PURPLE: anything else      → purple ball
+     */
+    private RawColor classifyColor(RevColorSensorV3 sensor) {
         int r = sensor.red();
         int g = sensor.green();
         int b = sensor.blue();
 
         int sum = r + g + b;
-        if (sum < 60) {
-            return Ball.UNKNOWN;
+        if (sum < 50) {
+            // Very dark / noisy → treat as RED-ish junk so it gets ignored
+            return RawColor.RED;
         }
 
         double rn = r / (double) sum;
         double gn = g / (double) sum;
         double bn = b / (double) sum;
 
-        // Strong green dominance → GREEN
-        if (gn > rn + 0.10 && gn > bn + 0.10) {
-            return Ball.GREEN;
+        // Tuned off your sample values:
+        // Arm:       rn ~0.51, gn ~0.30, bn ~0.18  → RED
+        // Green ball:rn ~0.13, gn ~0.50, bn ~0.37 → GREEN
+        // Purple:    rn ~0.25, gn ~0.28, bn ~0.48 → PURPLE
+
+        // Green-dominant: green noticeably higher than both red & blue
+        boolean greenDominant =
+                (gn > rn + 0.05) &&   // g at least 0.05 above r
+                        (gn > bn + 0.02);     // g slightly above b
+
+        // Red-dominant: red clearly higher than both g & b (your red arms)
+        boolean redDominant =
+                (rn > gn + 0.10) &&   // r at least 0.10 above g
+                        (rn > bn + 0.05);     // r at least 0.05 above b
+
+        if (greenDominant) {
+            return RawColor.GREEN;
+        }
+        if (redDominant) {
+            return RawColor.RED;
         }
 
-        // Anything else we treat as PURPLE
-        return Ball.PURPLE;
+        // Everything else → PURPLE (blue-ish game ball)
+        return RawColor.PURPLE;
     }
 
-    // Use BOTH sensors:
-// - If neither sees a close object → UNKNOWN
-// - If both see the ball → use the closer one for color
-// - If only one sees it → use that one
+    /**
+     * Use BOTH sensors as:
+     * - If neither sees anything close → Ball.EMPTY
+     * - Otherwise:
+     *   * Pick the sensor that is closer to the object
+     *   * Classify into RED / GREEN / PURPLE
+     *   * Map:
+     *       RED    → Ball.EMPTY   (ignore arms)
+     *       GREEN  → Ball.GREEN
+     *       PURPLE → Ball.PURPLE
+     */
     private Ball detectBallColor() {
-        final double THRESH_CM = 3.0;
+        final double THRESH_CM = 5.0;
 
         double d1 = intakeColor.getDistance(DistanceUnit.CM);
         double d2 = intakeColor2.getDistance(DistanceUnit.CM);
@@ -321,13 +364,14 @@ public class SpindexerSubsystem {
         boolean present2 = !Double.isNaN(d2) && d2 <= THRESH_CM;
 
         if (!present1 && !present2) {
-            return Ball.UNKNOWN;
+            // Nothing close enough to be a ball
+            return Ball.EMPTY;
         }
 
+        // Choose which sensor to trust for color
         RevColorSensorV3 chosenSensor;
-
         if (present1 && present2) {
-            // Use whichever is closer to the ball
+            // Use whichever is closer
             chosenSensor = (d1 <= d2) ? intakeColor : intakeColor2;
         } else if (present1) {
             chosenSensor = intakeColor;
@@ -335,8 +379,20 @@ public class SpindexerSubsystem {
             chosenSensor = intakeColor2;
         }
 
-        return classifyColor(chosenSensor);
+        RawColor raw = classifyColor(chosenSensor);
+
+        switch (raw) {
+            case GREEN:
+                return Ball.GREEN;
+            case PURPLE:
+                return Ball.PURPLE;
+            case RED:
+            default:
+                // RED == arm / junk → treat as not-a-ball
+                return Ball.EMPTY;
+        }
     }
+
 
 
 
@@ -489,8 +545,21 @@ public class SpindexerSubsystem {
     //  - loader:    so we can start loader cycles during eject
     //  - yEdge:     true only on rising edge of Y
     public boolean update(Telemetry telemetry,
-                       LoaderSubsystem loader,
-                       boolean yEdge) {
+                          LoaderSubsystem loader,
+                          boolean yEdge,
+                          int patternTagOverride) {
+
+        // --- Optional manual override for gameTag from driver ---
+        // 23 = P,P,G
+        // 22 = P,G,P
+        // 21 = G,P,P
+        //  0 = "no pattern / fastest"
+        if (patternTagOverride == 21 ||
+                patternTagOverride == 22 ||
+                patternTagOverride == 23 ||
+                patternTagOverride == 0) {
+            gameTag = patternTagOverride;
+        }
 
         // --- Handle eject button press (start sequence if we have balls) ---
         if (yEdge && !ejecting && hasAnyBall()) {
@@ -501,31 +570,28 @@ public class SpindexerSubsystem {
 
 
 
-// --- Auto-intake (only when a slot is actually at intake) ---
         if (!isFull()) {
-            boolean atIntakePose =
-                    isIntakeSlotAtIntakePosition()
-                            && !ejecting               // don’t intake while shooting
-                            && !pendingAutoRotate      // not in the middle of auto-rotate scheduling
-                            && !motor.isBusy();        // motor not currently moving
-
-            boolean ballPresent = false;
-
-            if (atIntakePose) {
-                ballPresent = isBallPresent();   // uses both sensors as OR
-            }
+            boolean ballPresent = isBallPresent();
 
             if (ballPresent && !lastBallPresent && slots[intakeIndex] == Ball.EMPTY) {
-                Ball color = detectBallColor();  // also uses both sensors
-                slots[intakeIndex] = color;
-                telemetry.addData("AutoIntake", "Slot %d = %s", intakeIndex, color);
+                Ball color = detectBallColor();
 
-                pendingAutoRotate = true;
-                autoRotateTimeMs = System.currentTimeMillis() + 100;
+                // Only save real balls (GREEN / PURPLE). RED got filtered out earlier.
+                if (color == Ball.GREEN || color == Ball.PURPLE) {
+                    slots[intakeIndex] = color;
+                    telemetry.addData("AutoIntake", "Slot %d = %s", intakeIndex, color);
+
+                    pendingAutoRotate = true;
+                    autoRotateTimeMs = System.currentTimeMillis() + 100;
+                } else {
+                    telemetry.addData("AutoIntake", "Ignored non-ball at slot %d", intakeIndex);
+                }
             }
 
             lastBallPresent = ballPresent;
         }
+
+
 
 
         // --- Pending auto-rotate (non-blocking, shortest-path) ---

@@ -39,6 +39,9 @@ public class ShooterTestTeleOp extends LinearOpMode {
     private boolean prevA, prevB, prevX, prevDpadL, prevDpadR, prevLeftBumper, prevRightBumper;
 
     boolean readyForIntake = true;
+    private long shooterSpinDownDeadline = 0;   // time (ms) until we turn shooter off
+    private boolean lastEjecting = false;       // for edge-detect on eject end
+
 
     @Override
     public void runOpMode() {
@@ -106,20 +109,7 @@ public class ShooterTestTeleOp extends LinearOpMode {
                 intake.stopIntake();
             }
 
-            // ===== SPINDEXER =====
-            boolean yEdge = gamepad1.y && !lastY;
-            lastY = gamepad1.y;
 
-
-            spindexerIsFull = spindexer.update(telemetry, loader, yEdge);
-
-            if (spindexerIsFull) {
-                shooterOn = true;
-                intakeOn = false;
-            }else{
-                shooterOn = false;
-                intakeOn = true;
-            }
 
             //turret
             // --- Presets using RUN_TO_POSITION ---
@@ -150,12 +140,53 @@ public class ShooterTestTeleOp extends LinearOpMode {
             // --- Manual override with joystick ---
             double stickX = gamepad1.right_stick_x;
             if (Math.abs(stickX) > 0.05) {
-                turret.setManualPower(stickX * 0.1);  // manual mode, overrides auto
+                turret.setManualPower(stickX * 0.4);  // manual mode, overrides auto
             }else{
                 turret.setManualPower(stickX * 0);
             }
 
             turret.update();
+
+            boolean yEdge = gamepad1.y && !lastY;
+            lastY = gamepad1.y;
+            //shooter timing
+            spindexerIsFull = spindexer.update(telemetry, loader, yEdge);
+
+// --- Eject / shooter timing logic ---
+            boolean ejecting   = spindexer.isEjecting();
+            boolean hasAnyBall = spindexer.hasAnyBall();
+            long now = System.currentTimeMillis();
+
+// 1) Detect the moment the eject sequence finishes AND all balls are gone
+            if (lastEjecting && !ejecting && !hasAnyBall) {
+                // keep shooter spinning for 2 seconds after last ball
+                shooterSpinDownDeadline = now + 2000;  // 2000 ms = 2 s
+            }
+            lastEjecting = ejecting;
+
+// 2) Decide whether we want shooter / intake right now
+            boolean wantShooter;
+            boolean wantIntake;
+
+// Case A: magazine full → spin up shooter, stop intake
+            if (spindexerIsFull) {
+                wantShooter = true;
+                wantIntake  = false;
+
+// Case B: in the middle of ejecting OR within 2s spin-down window
+            } else if (ejecting || now < shooterSpinDownDeadline) {
+                wantShooter = true;
+                wantIntake  = false;
+
+// Case C: not full, not ejecting, spin-down done → refill mag
+            } else {
+                wantShooter = false;
+                wantIntake  = true;
+            }
+
+            shooterOn = wantShooter;
+            intakeOn  = wantIntake;
+
 
 
 

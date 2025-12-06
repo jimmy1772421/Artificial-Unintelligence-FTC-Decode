@@ -23,11 +23,10 @@ public class ShooterSubsystem {
     private final DcMotorEx motor;
     private boolean isOn = false;
 
-    // Target speed controlled ONLY by buttons
-    private double targetRpm = 3800; // start at 0; bump with buttons
+    // Target speed controlled by dpad
+    private double targetRpm = 3800; // near-field default
 
-    // Edge detection
-    private boolean lastToggleBtn = false;
+    // Edge detection for RPM buttons
     private boolean lastIncBtn = false;
     private boolean lastDecBtn = false;
 
@@ -39,18 +38,22 @@ public class ShooterSubsystem {
     }
 
     /**
-     * Call this once per loop with the three buttons you map:
-     * @param togglePressed      e.g., gamepad1.a (rising edge toggles on/off)
-     * @param increasePressed    e.g., gamepad1.dpad_up (rising edge +250 RPM)
-     * @param decreasePressed    e.g., gamepad1.dpad_down (rising edge -250 RPM)
+     * Call this once per loop.
+     *
+     * @param enabled          true = shooter should be running, false = off
+     * @param increasePressed  e.g. gamepad1.dpad_up  (rising edge +250 RPM)
+     * @param decreasePressed  e.g. gamepad1.dpad_down (rising edge -250 RPM)
+     * @param fieldPosition    0 = near, 1 = far, anything else = safety off
      */
-    public void update(boolean togglePressed, boolean increasePressed, boolean decreasePressed, int fieldPosition) {
-        // Toggle on rising edge
-        if (togglePressed && !lastToggleBtn) {
-            isOn = !isOn;
-        }
+    public void update(boolean enabled,
+                       boolean increasePressed,
+                       boolean decreasePressed,
+                       int fieldPosition) {
 
-        // Adjust target RPM on rising edges
+        // Directly set on/off from caller (spindexer / driver logic)
+        isOn = enabled;
+
+        // Adjust target RPM on rising edges of dpad up/down
         if (increasePressed && !lastIncBtn) {
             targetRpm = clampRpm(targetRpm + RPM_STEP);
         }
@@ -60,25 +63,28 @@ public class ShooterSubsystem {
 
         // Apply output
         if (isOn) {
-            if (fieldPosition == 0){
-                motor.setVelocity(rpmToTicksPerSec(targetRpm));
-            }else if (fieldPosition == 1){
-                motor.setVelocity(rpmToTicksPerSec(targetRpm + (4750.0-3800.0)));
-            }else{
-                motor.setVelocity(rpmToTicksPerSec(0.0));
+            double rpmCommand;
+
+            if (fieldPosition == 0) {
+                // near field
+                rpmCommand = targetRpm;
+            } else if (fieldPosition == 1) {
+                // far field: your original offset (4750 - 3800)
+                rpmCommand = targetRpm + (4750.0 - 3800.0);
+            } else {
+                // unknown field position, be safe
+                rpmCommand = 0.0;
             }
 
+            motor.setVelocity(rpmToTicksPerSec(rpmCommand));
         } else {
             motor.setVelocity(0.0);
         }
 
-        // Latch buttons
-        lastToggleBtn = togglePressed;
+        // Latch buttons for edge detection
         lastIncBtn = increasePressed;
         lastDecBtn = decreasePressed;
     }
-
-
 
     private double clampRpm(double rpm) {
         if (rpm < 0) return 0;
@@ -93,7 +99,6 @@ public class ShooterSubsystem {
 
     public void stop() {
         isOn = false;
-        targetRpm = 0.0;
         motor.setVelocity(0.0);
     }
 }

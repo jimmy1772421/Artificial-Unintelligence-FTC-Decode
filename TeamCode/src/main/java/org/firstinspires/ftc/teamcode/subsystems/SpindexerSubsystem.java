@@ -263,16 +263,31 @@ public class SpindexerSubsystem {
 
     // ===== Color / ball handling =====
 
-    private Ball detectBallColor() {
-        // Check distance first: only detect if a ball is "close"
-        double distCm = intakeColor.getDistance(DistanceUnit.CM);
-        if (distCm > 2.0) {
-            return Ball.UNKNOWN; // no ball close enough
-        }
+// ===== Color / ball handling =====
 
-        int r = intakeColor.red();
-        int g = intakeColor.green();
-        int b = intakeColor.blue();
+
+
+    /**
+     * Classify color from a single REV color sensor (GREEN / PURPLE / UNKNOWN).
+     */
+// Returns true if either sensor sees something close
+    private boolean isBallPresent() {
+        final double THRESH_CM = 3.0; // a bit tighter than 5.0
+
+        double d1 = intakeColor.getDistance(DistanceUnit.CM);
+        double d2 = intakeColor2.getDistance(DistanceUnit.CM);
+
+        boolean present1 = !Double.isNaN(d1) && d1 <= THRESH_CM;
+        boolean present2 = !Double.isNaN(d2) && d2 <= THRESH_CM;
+
+        return present1 || present2;
+    }
+
+    // Classify color from a single sensor
+    private Ball classifyColor(RevColorSensorV3 sensor) {
+        int r = sensor.red();
+        int g = sensor.green();
+        int b = sensor.blue();
 
         int sum = r + g + b;
         if (sum < 60) {
@@ -283,12 +298,49 @@ public class SpindexerSubsystem {
         double gn = g / (double) sum;
         double bn = b / (double) sum;
 
+        // Strong green dominance → GREEN
         if (gn > rn + 0.10 && gn > bn + 0.10) {
             return Ball.GREEN;
         }
 
+        // Anything else we treat as PURPLE
         return Ball.PURPLE;
     }
+
+    // Use BOTH sensors:
+// - If neither sees a close object → UNKNOWN
+// - If both see the ball → use the closer one for color
+// - If only one sees it → use that one
+    private Ball detectBallColor() {
+        final double THRESH_CM = 3.0;
+
+        double d1 = intakeColor.getDistance(DistanceUnit.CM);
+        double d2 = intakeColor2.getDistance(DistanceUnit.CM);
+
+        boolean present1 = !Double.isNaN(d1) && d1 <= THRESH_CM;
+        boolean present2 = !Double.isNaN(d2) && d2 <= THRESH_CM;
+
+        if (!present1 && !present2) {
+            return Ball.UNKNOWN;
+        }
+
+        RevColorSensorV3 chosenSensor;
+
+        if (present1 && present2) {
+            // Use whichever is closer to the ball
+            chosenSensor = (d1 <= d2) ? intakeColor : intakeColor2;
+        } else if (present1) {
+            chosenSensor = intakeColor;
+        } else {
+            chosenSensor = intakeColor2;
+        }
+
+        return classifyColor(chosenSensor);
+    }
+
+
+
+
 
     /**
      * Manual "take one" from the intake.
@@ -415,6 +467,20 @@ public class SpindexerSubsystem {
         return selectFastestNonEmptySlot(currentAngle);
     }
 
+    /**
+     * Returns true if the slot indexed by intakeIndex is actually
+     * lined up at the intake position (within a small angle tolerance).
+     */
+    private boolean isIntakeSlotAtIntakePosition() {
+        double desiredAngle = slotCenterAngleAtIntake(intakeIndex); // 0°, 120°, or 240°
+        double currentAngle = getCurrentAngleDeg();
+
+        double diff = smallestAngleDiff(currentAngle, desiredAngle);
+        double tolDeg = 360.0 * TOLERANCE_TICKS / TICKS_PER_REV;  // same style as isAtMid()
+        return Math.abs(diff) <= tolDeg;
+    }
+
+
 
     // ===== MAIN UPDATE: auto-intake + ejection =====
     //
@@ -434,13 +500,23 @@ public class SpindexerSubsystem {
         }
 
 
-        // --- Auto-intake (same as your old update) ---
+
+// --- Auto-intake (only when a slot is actually at intake) ---
         if (!isFull()) {
-            double distCm = intakeColor.getDistance(DistanceUnit.CM);
-            boolean ballPresent = distCm <= 2.0;
+            boolean atIntakePose =
+                    isIntakeSlotAtIntakePosition()
+                            && !ejecting               // don’t intake while shooting
+                            && !pendingAutoRotate      // not in the middle of auto-rotate scheduling
+                            && !motor.isBusy();        // motor not currently moving
+
+            boolean ballPresent = false;
+
+            if (atIntakePose) {
+                ballPresent = isBallPresent();   // uses both sensors as OR
+            }
 
             if (ballPresent && !lastBallPresent && slots[intakeIndex] == Ball.EMPTY) {
-                Ball color = detectBallColor();
+                Ball color = detectBallColor();  // also uses both sensors
                 slots[intakeIndex] = color;
                 telemetry.addData("AutoIntake", "Slot %d = %s", intakeIndex, color);
 
@@ -450,6 +526,7 @@ public class SpindexerSubsystem {
 
             lastBallPresent = ballPresent;
         }
+
 
         // --- Pending auto-rotate (non-blocking, shortest-path) ---
         if (pendingAutoRotate && System.currentTimeMillis() >= autoRotateTimeMs) {

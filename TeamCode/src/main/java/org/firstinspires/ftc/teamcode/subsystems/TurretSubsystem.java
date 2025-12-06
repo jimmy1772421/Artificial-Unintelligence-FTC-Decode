@@ -20,7 +20,7 @@ public class TurretSubsystem {
     private static final double MAX_ANGLE_DEG = 120.0;
 
     //proportional gain for position control
-    private static final double kP = 0.003;
+    private static final double kP = 0.01;
     private static final double MAX_AUTO_POWER = 0.5;
 
     private final DcMotorEx turretMotor;

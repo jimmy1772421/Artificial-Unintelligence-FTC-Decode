@@ -172,4 +172,12 @@ public class ShooterSubsystem {
         isOn = false;
         motor.setPower(0.0);
     }
+
+    public  void setNearRPM (long RPM){
+        nearRpm = RPM;
+    }
+
+    public void setFarRPM (long RPM){
+        farRpm = RPM;
+    }
 }

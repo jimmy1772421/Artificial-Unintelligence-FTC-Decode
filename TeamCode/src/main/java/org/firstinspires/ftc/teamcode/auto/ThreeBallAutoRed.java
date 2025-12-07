@@ -9,8 +9,8 @@ import org.firstinspires.ftc.teamcode.subsystems.SpindexerSubsystem;
 import org.firstinspires.ftc.teamcode.subsystems.LoaderSubsystem;
 import org.firstinspires.ftc.teamcode.subsystems.IntakeSubsystem_Motor;
 
-@Autonomous(name = "ThreeBallPathAuto", group = "Comp")
-public class ThreeBallPathAuto extends LinearOpMode {
+@Autonomous(name = "ThreeBallPathAutoRed", group = "Comp")
+public class ThreeBallAutoRed extends LinearOpMode {
 
     private DrivetrainSubsystem drive;
     private ShooterSubsystem shooter;
@@ -77,7 +77,7 @@ public class ThreeBallPathAuto extends LinearOpMode {
         // drive.driveForwardMm(this, 800, 0.5);
         // drive.strafeMm(this, 300, 0.5);
         // drive.rotateInPlaceForMs(this, 0.4, 500);
-        drive.strafeMm(this, 600, 0.5);
+        drive.strafeMm(this, -600, 0.5);
         drive.driveForwardMm(this,1000,0.5);
 
         drive.rotateInPlaceForMs(this, -0.4, 500);
@@ -106,12 +106,12 @@ public class ThreeBallPathAuto extends LinearOpMode {
 
 
     private void stopAll() {
-            drive.stopAll();
-            intake.stopIntake();
-            shooter.stop();  // hard off
-            // optional: keep state in sync
-            shooter.update(false, false, false, fieldPos);
-        }
+        drive.stopAll();
+        intake.stopIntake();
+        shooter.stop();  // hard off
+        // optional: keep state in sync
+        shooter.update(false, false, false, fieldPos);
+    }
 
 
     // ---------------- SHOOTER HELPERS ----------------
@@ -164,7 +164,28 @@ public class ThreeBallPathAuto extends LinearOpMode {
         }
     }
 
-
+    /**
+     * Shoot whatever is currently in the magazine using the spindexer state machine,
+     * in "fast" mode (patternTagOverride = 0).
+     *
+     * Assumes:
+     *  - slots[] in the spindexer accurately reflect which slots have balls
+     *  - auto-intake has already loaded slots OR you preloaded and seeded slots in code
+     *
+     * ShooterSubsystem.update(on, rpmUp, rpmDown, fieldPos)
+     *  -> HERE `on` is treated as "want shooter ON this loop", NOT a toggle.
+     */
+    /**
+     * Shoot whatever is currently in the magazine using the spindexer state machine,
+     * in "fast" mode (patternTagOverride = 0).
+     *
+     * Assumes:
+     *  - slots[] in the spindexer accurately reflect which slots have balls
+     *  - auto-intake has already loaded slots OR you preloaded and seeded slots in code
+     *
+     * ShooterSubsystem.update(on, rpmUp, rpmDown, fieldPos)
+     *  -> HERE `on` is treated as "want shooter ON this loop", NOT a toggle.
+     */
     private void shootMagazineFastNoPattern() {
 
         // ===== 1) Spin up shooter once and let it get to speed =====

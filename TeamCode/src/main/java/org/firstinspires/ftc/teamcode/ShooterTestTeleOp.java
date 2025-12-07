@@ -116,7 +116,7 @@ public class ShooterTestTeleOp extends LinearOpMode {
             if (intakeOn) {
                 intake.startIntake();
             } else {
-                intake.stopIntake();
+                intake.startIntake();
             }
 
             // ===== TURRET =====

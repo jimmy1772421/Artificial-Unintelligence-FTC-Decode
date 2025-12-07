@@ -12,7 +12,7 @@ public class SpindexerTuneTeleOp extends LinearOpMode {
     public void runOpMode() {
         // Names must match your config
         DcMotorEx motor = hardwareMap.get(DcMotorEx.class, "spindexerMotor");
-        AnalogInput abs = hardwareMap.get(AnalogInput.class, "turretABS");
+        AnalogInput abs = hardwareMap.get(AnalogInput.class, "spindexerAbs");
 
         telemetry.addLine("Spindexer Manual Tune");
         telemetry.addLine("D-pad LEFT/RIGHT: bump the spindexer a tiny amount");

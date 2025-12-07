@@ -10,7 +10,7 @@ public class IntakeSubsystem_Motor {
     private static final double TICKS_PER_REV = 28.0;
     private static final double PHYSICAL_MAX_RPM = 6000.0;
     private static final double RPM_STEP = 250.0;
-    private double speed = 3000.0;
+    private double speed = 1500.0;
 
     // Internal helpers
     private static double rpmToTicksPerSec(double rpm) {

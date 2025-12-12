@@ -6,6 +6,7 @@ import com.qualcomm.robotcore.hardware.HardwareMap;
 import com.qualcomm.robotcore.hardware.Servo;
 import com.qualcomm.robotcore.util.ElapsedTime;
 import com.qualcomm.robotcore.util.Range;
+import org.firstinspires.ftc.teamcode.subsystems.LightSubsystem;
 
 public class ShooterSubsystem {
 
@@ -31,6 +32,7 @@ public class ShooterSubsystem {
     // ===== HARDWARE =====
     private final DcMotorEx motor;
     private final Servo hoodServo;
+    private LightSubsystem light;
 
     // ===== STATE =====
     private boolean isOn = false;   // shooter commanded on/off
@@ -59,6 +61,8 @@ public class ShooterSubsystem {
     public ShooterSubsystem(HardwareMap hardwareMap) {
         motor = hardwareMap.get(DcMotorEx.class, "motor_one");
         hoodServo = hardwareMap.get(Servo.class, "hoodServo");
+        light = new LightSubsystem(hardwareMap);
+
 
         // We are doing our own velocity control, so avoid built-in velocity PID
         motor.setMode(com.qualcomm.robotcore.hardware.DcMotor.RunMode.STOP_AND_RESET_ENCODER);
@@ -129,8 +133,10 @@ public class ShooterSubsystem {
 
         if (isOn && targetRpm > 0) {
             runPidStep(targetRpm);
+            light.setColor(2);
         } else {
             stop();
+            light.setColor(1);
         }
     }
 

@@ -44,7 +44,7 @@ public class SpindexerSubsystem {
     // Analog abs encoder
     private static final double ABS_VREF = 3.3; // REV analog reference
 
-    // Raw abs angle (deg) when SLOT 0 is perfectly at intake (you measured this)
+    // Raw abs angle (deg) when SLOT 0 is perfectly at intake
     // i.e. absRaw == 260.7°  <=>  internal angle == 0°
     private static final double ABS_MECH_OFFSET_DEG = 260.8;
 
@@ -58,10 +58,10 @@ public class SpindexerSubsystem {
     // encoder value for angle 0° (intake) when slot 0 is at intake
     private int zeroTicks = 0;
 
-    // which slot index is currently "at intake" (0,1,2)
+    // which slot index is currently at intake (0,1,2)
     private int intakeIndex = 0;
 
-    // pattern first eject index (used by some helper methods)
+    // pattern first eject index
     private int ejectStartIndex = 0;
 
     private final Ball[] slots = new Ball[SLOT_COUNT];
@@ -84,7 +84,7 @@ public class SpindexerSubsystem {
     // 23 = P, P, G
     // 22 = P, G, P
     // 21 = G, P, P
-    //  0 = no valid tag -> "fastest possible" logic
+    //  0 = no valid tag -> fastest possible logic
     private int gameTag = 0;
     // index into the 3-shot pattern (0,1,2) while we are in an eject sequence
     private int patternStep = 0;
@@ -97,9 +97,9 @@ public class SpindexerSubsystem {
         return gameTag;
     }
 
-    // If mag was full when we started shooting
+    // If mag was full when started shooting
     private static final long WAIT_BEFORE_LOADER_FULL_MS    = 300;
-    // If mag was NOT full when we started shooting (give shooter more spin-up time)
+    // If mag was NOT full when started shooting (give shooter more spin-up time)
     private static final long WAIT_BEFORE_LOADER_PARTIAL_MS = 1000;
 
     private static final long WAIT_AFTER_LOADER_MS  = 700;

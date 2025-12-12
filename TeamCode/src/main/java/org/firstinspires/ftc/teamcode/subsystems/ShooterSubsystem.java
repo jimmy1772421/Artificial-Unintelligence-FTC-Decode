@@ -133,7 +133,7 @@ public class ShooterSubsystem {
 
         if (isOn && targetRpm > 0) {
             runPidStep(targetRpm);
-            if (lastError < 200) {
+            if (lastError < 200 || -lastError < 200) {
                 light.setColor(3);
             }else{
                 light.setColor(2);

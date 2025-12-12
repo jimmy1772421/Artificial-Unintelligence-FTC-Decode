@@ -98,9 +98,9 @@ public class SpindexerSubsystem {
     }
 
     // If mag was full when started shooting
-    private static final long WAIT_BEFORE_LOADER_FULL_MS    = 300;
+    private static final long WAIT_BEFORE_LOADER_FULL_MS    = 200;
     // If mag was NOT full when started shooting (give shooter more spin-up time)
-    private static final long WAIT_BEFORE_LOADER_PARTIAL_MS = 1000;
+    private static final long WAIT_BEFORE_LOADER_PARTIAL_MS = 2000;
 
     private static final long WAIT_AFTER_LOADER_MS  = 700;
     // Whether the mag was full (3 balls) when this eject sequence started

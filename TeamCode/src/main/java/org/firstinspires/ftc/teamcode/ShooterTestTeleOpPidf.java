@@ -1,6 +1,5 @@
 package org.firstinspires.ftc.teamcode;
 
-import com.acmerobotics.dashboard.telemetry.TelemetryPacket;
 import com.acmerobotics.dashboard.FtcDashboard;
 import com.acmerobotics.dashboard.telemetry.MultipleTelemetry;
 import com.acmerobotics.dashboard.telemetry.TelemetryPacket;
@@ -8,24 +7,25 @@ import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
 import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
 
 import org.firstinspires.ftc.teamcode.subsystems.DrivetrainSubsystem;
-import org.firstinspires.ftc.teamcode.subsystems.ShooterSubsystemNoPID;
+import org.firstinspires.ftc.teamcode.subsystems.ShooterSubsystemPIDF;
 import org.firstinspires.ftc.teamcode.subsystems.LoaderSubsystem;
 import org.firstinspires.ftc.teamcode.subsystems.SpindexerSubsystem;
 import org.firstinspires.ftc.teamcode.subsystems.TurretSubsystem;
 import org.firstinspires.ftc.teamcode.subsystems.IntakeSubsystem_Motor;
 
-@TeleOp(name = "Shooter Test", group = "Test")
-public class ShooterTestTeleOp extends LinearOpMode {
+@TeleOp(name = "Shooter Test pidF", group = "Test")
+public class ShooterTestTeleOpPidf extends LinearOpMode {
 
-    private ShooterSubsystemNoPID shooter;
+    private ShooterSubsystemPIDF shooter;
     private IntakeSubsystem_Motor intake;
     private SpindexerSubsystem spindexer;
     private LoaderSubsystem loader;
     private DrivetrainSubsystem drive;
     private TurretSubsystem turret;
 
-    private boolean lastY = false;
+    private FtcDashboard dashboard;
 
+    private boolean lastY = false;
     private boolean prev2a = false;
 
     private int fieldPos = 0; // 0 = nearfield, 1 = far
@@ -37,8 +37,8 @@ public class ShooterTestTeleOp extends LinearOpMode {
 
     private boolean slowMode = false;
 
-    // turret buttons
-    private boolean prevA, prevB, prevX, prevDpadL, prevDpadR;
+    // turret buttons (only A + dpad L/R now)
+    private boolean prevA, prevDpadL, prevDpadR;
 
     boolean readyForIntake = true;
     private long shooterSpinDownDeadline = 0;   // time (ms) until we turn shooter off
@@ -49,25 +49,42 @@ public class ShooterTestTeleOp extends LinearOpMode {
 
     private boolean prevLeftStick = false;
 
-    // --- NEW: rehome button edge tracking (M1-style) ---
-    // Map M1 to some button; here we use gamepad1.left_stick_button
+    // rehome button edge tracking
     private boolean prevRehome = false;
 
     private boolean prev2LeftBumper = false;
     private boolean prev2RightBumper = false;
 
+    // === PID tuning on driver gamepad ===
+    // 0 = kP, 1 = kI, 2 = kD, 3 = kF
+    private int pidParamIndex = 0;
+    private boolean prevStart1 = false;
+    private boolean prevXpid = false; // square
+    private boolean prevBpid = false; // circle
+
+    // step sizes for tuning
+    private static final double KP_STEP = 0.0001;
+    private static final double KI_STEP = 0.000001;
+    private static final double KD_STEP = 0.00005;
+    private static final double KF_STEP = 0.000001; // adjust if too coarse/fine
 
     @Override
     public void runOpMode() {
-        shooter   = new ShooterSubsystemNoPID(hardwareMap);
+        shooter   = new ShooterSubsystemPIDF(hardwareMap);
         loader    = new LoaderSubsystem(hardwareMap);
         intake    = new IntakeSubsystem_Motor(hardwareMap);
         spindexer = new SpindexerSubsystem(hardwareMap);
         drive     = new DrivetrainSubsystem(hardwareMap);
         turret    = new TurretSubsystem(hardwareMap);
 
+        // FTC Dashboard hookup
+        dashboard = FtcDashboard.getInstance();
+        telemetry = new MultipleTelemetry(telemetry, dashboard.getTelemetry());
+
         telemetry.addLine("Spindexer auto-intake running.");
         telemetry.addLine("Y: start eject sequence (if any balls).");
+        telemetry.addLine("START: cycle PID param (kP/kI/kD/kF)");
+        telemetry.addLine("SQUARE (X): - selected PIDF, CIRCLE (B): + selected PIDF");
         telemetry.update();
 
         waitForStart();
@@ -77,19 +94,15 @@ public class ShooterTestTeleOp extends LinearOpMode {
         spindexer.homeToIntake();
 
         while (opModeIsActive()) {
-            // ===== SHOOTER =====
             // ===== SHOOTER FIELD POSITION TOGGLE =====
             boolean leftStickButton = gamepad1.left_stick_button;
 
-            // Rising edge: button is pressed now, but wasn't last loop
             if (leftStickButton && !prevLeftStick) {
-                // Toggle between 0 (near) and 1 (far)
-                fieldPos = (fieldPos == 0) ? 1 : 0;
+                fieldPos = (fieldPos == 0) ? 1 : 0; // toggle near/far
             }
-
-            // Update previous state
             prevLeftStick = leftStickButton;
 
+            // Shooter update uses shooterOn; shooterOn decided later based on spindexer state.
             shooter.update(
                     shooterOn,
                     gamepad1.dpad_up,
@@ -97,7 +110,7 @@ public class ShooterTestTeleOp extends LinearOpMode {
                     fieldPos
             );
 
-            // ==== DRIVETRAIN ====
+            // ===== DRIVETRAIN =====
             double leftX  = gamepad2.left_stick_x;
             double leftY  = gamepad2.left_stick_y;
             double rightX = gamepad2.right_stick_x;
@@ -109,8 +122,6 @@ public class ShooterTestTeleOp extends LinearOpMode {
             prev2a = a2;
 
             drive.setDriveScale(slowMode ? 0.4 : 1.0);
-
-            telemetry.addData("Drive Scale", drive.getDriveScale());
             drive.drive(leftX, leftY, rightX);
 
             // ===== LOADER =====
@@ -124,29 +135,18 @@ public class ShooterTestTeleOp extends LinearOpMode {
             }
 
             // ===== TURRET =====
-            // Presets using RUN_TO_POSITION
             boolean a = gamepad1.a;
-            boolean b = gamepad1.b;
-            boolean x = gamepad1.x;
             boolean dl = gamepad1.dpad_left;
             boolean dr = gamepad1.dpad_right;
 
-
             if (a && !prevA) turret.goToAngle(0.0);
-            if (b && !prevB) turret.goToAngle(45.0);
-            if (x && !prevX) turret.goToAngle(-45.0);
             if (dl && !prevDpadL) turret.goToAngle(90.0);
             if (dr && !prevDpadR) turret.goToAngle(-90.0);
 
-
             prevA = a;
-            prevB = b;
-            prevX = x;
             prevDpadL = dl;
             prevDpadR = dr;
 
-
-            // Manual override with joystick
             double stickX = gamepad1.right_stick_x;
             if (Math.abs(stickX) > 0.05) {
                 turret.setManualPower(stickX * 0.4);
@@ -162,20 +162,14 @@ public class ShooterTestTeleOp extends LinearOpMode {
             boolean yEdge = gamepad1.y && !lastY;
             lastY = gamepad1.y;
 
-            // --- NEW: M1 rehome button (here: gamepad1.left_stick_button) ---
-            boolean rehomeButton = gamepad1.right_stick_button; // bind your M1 to this
+            // Rehome spindexer on right stick button
+            boolean rehomeButton = gamepad1.right_stick_button;
             if (rehomeButton && !prevRehome) {
-                // Rehome spindexer: rotate slot 0 back to intake
                 spindexer.homeToIntake();
-                // (Optional) you could also rezero encoder or clear slots here if you want
             }
             prevRehome = rehomeButton;
 
             // driver 2 chooses pattern tag with dpad:
-            // up    -> 23 (P,P,G)
-            // right -> 22 (P,G,P)
-            // left  -> 21 (G,P,P)
-            // down  -> 0  (no pattern / fastest)
             boolean dUp2    = gamepad2.dpad_up;
             boolean dRight2 = gamepad2.dpad_right;
             boolean dLeft2  = gamepad2.dpad_left;
@@ -199,7 +193,6 @@ public class ShooterTestTeleOp extends LinearOpMode {
             prev2Left  = dLeft2;
             prev2Down  = dDown2;
 
-            // Call spindexer.update with the pattern override
             spindexerIsFull = spindexer.update(telemetry, loader, yEdge, driverPatternTag);
 
             // --- Eject / shooter timing logic ---
@@ -207,28 +200,20 @@ public class ShooterTestTeleOp extends LinearOpMode {
             boolean hasAnyBall = spindexer.hasAnyBall();
             long now = System.currentTimeMillis();
 
-            // Detect the moment the eject sequence finishes AND all balls are gone
             if (lastEjecting && !ejecting && !hasAnyBall) {
-                // keep shooter spinning for 2 seconds after last ball
-                shooterSpinDownDeadline = now + 2000;  // 2000 ms = 2 s
+                shooterSpinDownDeadline = now + 2000;  // 2 s after last ball
             }
             lastEjecting = ejecting;
 
-            // Decide whether we want shooter / intake right now
             boolean wantShooter;
             boolean wantIntake;
 
-            // Case A: magazine full → spin up shooter, stop intake
             if (spindexerIsFull) {
                 wantShooter = true;
                 wantIntake  = false;
-
-                // Case B: in the middle of ejecting OR within 2s spin-down window
             } else if (ejecting || now < shooterSpinDownDeadline) {
                 wantShooter = true;
                 wantIntake  = false;
-
-                // Case C: not full, not ejecting, spin-down done → refill mag
             } else {
                 wantShooter = false;
                 wantIntake  = true;
@@ -241,20 +226,48 @@ public class ShooterTestTeleOp extends LinearOpMode {
             boolean lb2 = gamepad2.left_bumper;
             boolean rb2 = gamepad2.right_bumper;
 
-// Left bumper: force current intake slot as GREEN
             if (lb2 && !prev2LeftBumper) {
                 spindexer.forceIntakeSlotGreen(telemetry);
             }
-
-// Right bumper: force current intake slot as PURPLE
             if (rb2 && !prev2RightBumper) {
                 spindexer.forceIntakeSlotPurple(telemetry);
             }
 
-// update edge-detect state
             prev2LeftBumper = lb2;
             prev2RightBumper = rb2;
 
+            // ===== PID TUNING (driver: START + SQUARE/CIRCLE) =====
+            boolean start1 = gamepad1.start;
+            boolean xPid   = gamepad1.x; // square
+            boolean bPid   = gamepad1.b; // circle
+
+            // cycle which param we’re editing
+            if (start1 && !prevStart1) {
+                pidParamIndex = (pidParamIndex + 1) % 4; // 0 -> 1 -> 2 -> 3 -> 0
+            }
+
+
+            // Circle (B) increases, Square (X) decreases selected param (edge-triggered)
+            if (bPid && !prevBpid) {
+                switch (pidParamIndex) {
+                    case 0: shooter.adjustKp(KP_STEP);  break;
+                    case 1: shooter.adjustKi(KI_STEP);  break;
+                    case 2: shooter.adjustKd(KD_STEP);  break;
+                    case 3: shooter.adjustKf(KF_STEP);  break;
+                }
+            }
+
+            if (xPid && !prevXpid) {
+                switch (pidParamIndex) {
+                    case 0: shooter.adjustKp(-KP_STEP);  break;
+                    case 1: shooter.adjustKi(-KI_STEP);  break;
+                    case 2: shooter.adjustKd(-KD_STEP);  break;
+                    case 3: shooter.adjustKf(-KF_STEP);  break;
+                }
+            }
+
+            prevBpid = bPid;
+            prevXpid = xPid;
 
             // ===== TELEMETRY =====
             SpindexerSubsystem.Ball[] s = spindexer.getSlots();
@@ -270,13 +283,38 @@ public class ShooterTestTeleOp extends LinearOpMode {
             telemetry.addData("Spd angle(enc)", "%.1f", spindexer.getCurrentAngleDeg());
             spindexer.debugAbsAngle(telemetry);
 
+            // shooter telemetry
+            double target = shooter.getTargetRpm();
+            double current = shooter.getCurrentRpmEstimate();
+            double error = target - current;
+
             telemetry.addData("Shooter On", shooter.isOn());
-            telemetry.addData("Target RPM", "%.0f", shooter.getTargetRpm());
-            telemetry.addData("Current RPM (est)", "%.0f", shooter.getCurrentRpmEstimate());
+            telemetry.addData("Field Pos", (fieldPos == 0) ? "NEAR" : "FAR");
+            telemetry.addData("Target RPM", "%.0f", target);
+            telemetry.addData("Current RPM (est)", "%.0f", current);
+            telemetry.addData("RPM Error", "%.0f", error);
+
+            String selectedParamName =
+                    (pidParamIndex == 0) ? "kP" :
+                            (pidParamIndex == 1) ? "kI" :
+                                    (pidParamIndex == 2) ? "kD" : "kF";
+
+            telemetry.addData("PIDF Selected", selectedParamName);
+            telemetry.addData("kP", shooter.getKp());
+            telemetry.addData("kI", shooter.getKi());
+            telemetry.addData("kD", shooter.getKd());
+            telemetry.addData("kF", shooter.getKf());
+
+
             telemetry.addData("Pattern Tag", driverPatternTag);
             telemetry.addData("Pattern Order", spindexer.getGamePattern());
 
-
+            // === DASHBOARD PACKET (for graphs) ===
+            TelemetryPacket packet = new TelemetryPacket();
+            packet.put("rpm", current);
+            packet.put("target", target);
+            packet.put("error", error);
+            dashboard.sendTelemetryPacket(packet);
 
             telemetry.update();
         }

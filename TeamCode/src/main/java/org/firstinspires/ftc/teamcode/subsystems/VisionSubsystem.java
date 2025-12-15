@@ -13,8 +13,7 @@ public class VisionSubsystem {
     public VisionSubsystem(HardwareMap hardwareMap) {
         limelight3A = hardwareMap.get(Limelight3A.class, "limelight");
 
-        // Optional but nice
-        limelight3A.setPollRateHz(100);
+
 
         // Your AprilTag pipeline index
         limelight3A.pipelineSwitch(0);

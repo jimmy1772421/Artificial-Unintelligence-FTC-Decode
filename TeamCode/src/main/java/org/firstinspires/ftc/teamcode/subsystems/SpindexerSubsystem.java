@@ -244,6 +244,7 @@ public class SpindexerSubsystem {
         motor.setPower(0);
         motor.setMode(DcMotor.RunMode.RUN_USING_ENCODER);
 
+
         verifyAndCorrectFromAbs();
     }
 

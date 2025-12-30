@@ -16,10 +16,9 @@ import com.qualcomm.robotcore.eventloop.opmode.OpMode;
 import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
 
 import org.firstinspires.ftc.teamcode.pedroPathing.Constants;
-//import org.firstinspires.ftc.teamcode.pedroPathing.Drawing;
 import org.firstinspires.ftc.teamcode.subsystems.ShooterSubsystemPIDF;
 import org.firstinspires.ftc.teamcode.subsystems.LoaderSubsystem;
-import org.firstinspires.ftc.teamcode.subsystems.SpindexerSubsystem;
+import org.firstinspires.ftc.teamcode.subsystems.SpindexerSubsystem_State;
 import org.firstinspires.ftc.teamcode.subsystems.TurretSubsystem;
 import org.firstinspires.ftc.teamcode.subsystems.IntakeSubsystem_Motor;
 
@@ -31,29 +30,28 @@ public class TeleOp_pedro_pidf extends OpMode {
 
     // ===== PEDRO FOLLOWER / DRIVE =====
     private Follower follower;
-    public static Pose startingPose; // optional: can be set from auto
+    public static Pose startingPose;
     private boolean automatedDrive = false;
     private Supplier<PathChain> pathChain;
     private TelemetryManager telemetryM;
 
-    private boolean slowMode = false;   // same meaning as old teleop (0.4 speed)
+    private boolean slowMode = false;
 
     // ===== SUBSYSTEMS =====
     private ShooterSubsystemPIDF shooter;
     private IntakeSubsystem_Motor intake;
-    private SpindexerSubsystem spindexer;
+    private SpindexerSubsystem_State spindexer;   // ✅ use _State
     private LoaderSubsystem loader;
     private TurretSubsystem turret;
 
     // ===== DASHBOARD =====
     private FtcDashboard dashboard;
 
-    // ===== STATE VARIABLES (from old ShooterTestTeleOpPidf, trimmed) =====
-    private boolean lastY = false;       // for spindexer eject (gamepad1 Y edge)
-    private boolean prev2a = false;      // gamepad2 A slowMode toggle
+    // ===== STATE VARIABLES =====
+    private boolean lastY = false;
+    private boolean prev2a = false;
 
-    private int fieldPos = 0;            // 0 = nearfield, 1 = far
-
+    private int fieldPos = 0;
     private boolean spindexerIsFull = false;
 
     private boolean shooterOn = false;
@@ -63,32 +61,28 @@ public class TeleOp_pedro_pidf extends OpMode {
     private boolean prevA, prevDpadL, prevDpadR;
 
     boolean readyForIntake = true;
-    private long shooterSpinDownDeadline = 0;   // time (ms) until we turn shooter off
-    private boolean lastEjecting = false;       // edge-detect on eject end
+    private long shooterSpinDownDeadline = 0;
+    private boolean lastEjecting = false;
 
-    private int driverPatternTag = 0;  // 0 = fastest, 21/22/23 = pattern
+    private int driverPatternTag = 0;
     private boolean prev2Up, prev2Right, prev2Left, prev2Down;
 
-    private boolean prevLeftStick = false;  // for fieldPos toggle (gamepad1 left stick button)
-
-    // rehome button edge tracking
+    private boolean prevLeftStick = false;
     private boolean prevRehome = false;
 
     private boolean prev2LeftBumper = false;
     private boolean prev2RightBumper = false;
+    private boolean prevStart = false;
+
 
     @Override
     public void init() {
-        // ===== INIT FOLLOWER =====
         follower = Constants.createFollower(hardwareMap);
         follower.setStartingPose(startingPose == null ? new Pose() : startingPose);
         follower.update();
 
         telemetryM = PanelsTelemetry.INSTANCE.getTelemetry();
-        //Drawing.init(); // sets PEDRO_PATHING offsets for Panels field
 
-
-        // Example lazy path: from current pose to (45, 98) with heading ~45°
         pathChain = () -> follower.pathBuilder()
                 .addPath(new Path(new BezierLine(follower::getPose, new Pose(45, 98))))
                 .setHeadingInterpolation(
@@ -104,63 +98,55 @@ public class TeleOp_pedro_pidf extends OpMode {
         shooter   = new ShooterSubsystemPIDF(hardwareMap);
         loader    = new LoaderSubsystem(hardwareMap);
         intake    = new IntakeSubsystem_Motor(hardwareMap);
-        spindexer = new SpindexerSubsystem(hardwareMap);
+        spindexer = new SpindexerSubsystem_State(hardwareMap);  // ✅ use _State constructor
         turret    = new TurretSubsystem(hardwareMap);
 
-        // ===== DASHBOARD TELEMETRY HOOKUP =====
         dashboard = FtcDashboard.getInstance();
         telemetry = new MultipleTelemetry(telemetry, dashboard.getTelemetry());
 
         telemetry.addLine("TeleOp with Pedro + Shooter PIDF");
-        telemetry.addLine("Controls match ShooterTestTeleOpPidf (drive now via Pedro).");
         telemetry.update();
     }
 
     @Override
     public void start() {
-        // start Pedro teleop drive
         follower.startTeleopDrive();
-
-        // home spindexer so slot 0 is at intake
         spindexer.homeToIntake();
-
         shooterSpinDownDeadline = 0;
     }
 
     @Override
     public void loop() {
+        long now = System.currentTimeMillis();
+
         // ===== UPDATE PEDRO FOLLOWER =====
         follower.update();
-        //Drawing.drawDebug(follower); // draws robot + path onto Panels field view
-
         telemetryM.update();
 
-        // ===== DRIVETRAIN (match old TeleOp: gamepad2 sticks + slow mode on gamepad2.a) =====
+        // ===== DRIVETRAIN =====
         double leftX  = -gamepad2.left_stick_x;
         double leftY  = -gamepad2.left_stick_y;
         double rightX = -gamepad2.right_stick_x;
 
         boolean a2 = gamepad2.a;
-        if (a2 && !prev2a) {
-            slowMode = !slowMode;
-        }
+        if (a2 && !prev2a) slowMode = !slowMode;
         prev2a = a2;
 
         double driveScale = slowMode ? 0.4 : 1.0;
 
         if (!automatedDrive) {
-            // signs chosen to match typical mecanum conventions;
-            // if your old DrivetrainSubsystem inverted differently, you can tweak here.
             follower.setTeleOpDrive(
                     -leftY * driveScale,
                     -leftX * driveScale,
                     -rightX * driveScale,
-                    true // Robot-centric (like original)
+                    true
             );
         }
 
-        // ===== AUTOMATED PATH FOLLOWING (Pedro sample controls) =====
-        if (gamepad1.aWasPressed()) {
+        boolean startEdge = gamepad1.start && !prevStart;
+        prevStart = gamepad1.start;
+
+        if (startEdge) {
             follower.followPath(pathChain.get());
             automatedDrive = true;
         }
@@ -170,14 +156,11 @@ public class TeleOp_pedro_pidf extends OpMode {
             automatedDrive = false;
         }
 
-        // ===== SHOOTER FIELD POSITION TOGGLE (gamepad1 left stick button) =====
+        // ===== SHOOTER FIELD POSITION TOGGLE =====
         boolean leftStickButton = gamepad1.left_stick_button;
-        if (leftStickButton && !prevLeftStick) {
-            fieldPos = (fieldPos == 0) ? 1 : 0; // toggle near/far
-        }
+        if (leftStickButton && !prevLeftStick) fieldPos = (fieldPos == 0) ? 1 : 0;
         prevLeftStick = leftStickButton;
 
-        // Shooter update uses shooterOn; shooterOn decided later based on spindexer state.
         shooter.update(
                 shooterOn,
                 gamepad1.dpad_up,
@@ -189,13 +172,10 @@ public class TeleOp_pedro_pidf extends OpMode {
         loader.updateLoader();
 
         // ===== INTAKE =====
-        if (intakeOn) {
-            intake.startIntake();
-        } else {
-            intake.stopIntake();
-        }
+        if (intakeOn) intake.startIntake();
+        else intake.stopIntake();
 
-        // ===== TURRET CONTROL (same as original: gamepad1) =====
+        // ===== TURRET CONTROL =====
         boolean a  = gamepad1.a;
         boolean dl = gamepad1.dpad_left;
         boolean dr = gamepad1.dpad_right;
@@ -204,65 +184,53 @@ public class TeleOp_pedro_pidf extends OpMode {
         if (dl && !prevDpadL) turret.goToAngle(90.0);
         if (dr && !prevDpadR) turret.goToAngle(-90.0);
 
-        prevA      = a;
-        prevDpadL  = dl;
-        prevDpadR  = dr;
+        prevA = a;
+        prevDpadL = dl;
+        prevDpadR = dr;
 
         double stickX = gamepad1.right_stick_x;
-        if (Math.abs(stickX) > 0.05) {
-            turret.setManualPower(stickX * 0.4);
-        } else {
-            turret.setManualPower(0.0);
-        }
+        if (Math.abs(stickX) > 0.05) turret.setManualPower(stickX * 0.4);
+        else turret.setManualPower(0.0);
 
         turret.update();
 
-        // ===== SPINDEXER / PATTERN INPUT =====
+        // ===== SPINDEXER STEP (important for state machine) =====
+        // If your SpindexerSubsystem_State has periodic(), call it every loop:
+        spindexer.periodic();
 
-        // Y on gamepad1 starts eject sequence
+        // Y starts eject sequence
         boolean yEdge = gamepad1.y && !lastY;
         lastY = gamepad1.y;
 
-        // Rehome spindexer on right stick button (gamepad1)
+        // Rehome spindexer
         boolean rehomeButton = gamepad1.right_stick_button;
-        if (rehomeButton && !prevRehome) {
-            spindexer.homeToIntake();
-        }
+        if (rehomeButton && !prevRehome) spindexer.homeToIntake();
         prevRehome = rehomeButton;
 
-        // driver 2 chooses pattern tag with dpad:
+        // driver2 sets pattern
         boolean dUp2    = gamepad2.dpad_up;
         boolean dRight2 = gamepad2.dpad_right;
         boolean dLeft2  = gamepad2.dpad_left;
         boolean dDown2  = gamepad2.dpad_down;
 
-        if (dUp2 && !prev2Up) {
-            driverPatternTag = 23;
-        }
-        if (dRight2 && !prev2Right) {
-            driverPatternTag = 22;
-        }
-        if (dLeft2 && !prev2Left) {
-            driverPatternTag = 21;
-        }
-        if (dDown2 && !prev2Down) {
-            driverPatternTag = 0; // fastest / no pattern
-        }
+        if (dUp2 && !prev2Up) driverPatternTag = 23;
+        if (dRight2 && !prev2Right) driverPatternTag = 22;
+        if (dLeft2 && !prev2Left) driverPatternTag = 21;
+        if (dDown2 && !prev2Down) driverPatternTag = 0;
 
-        prev2Up    = dUp2;
+        prev2Up = dUp2;
         prev2Right = dRight2;
-        prev2Left  = dLeft2;
-        prev2Down  = dDown2;
+        prev2Left = dLeft2;
+        prev2Down = dDown2;
 
         spindexerIsFull = spindexer.update(telemetry, loader, yEdge, driverPatternTag);
 
-        // --- Eject / shooter timing logic (unchanged) ---
+        // --- Eject / shooter timing ---
         boolean ejecting   = spindexer.isEjecting();
         boolean hasAnyBall = spindexer.hasAnyBall();
-        long now = System.currentTimeMillis();
 
         if (lastEjecting && !ejecting && !hasAnyBall) {
-            shooterSpinDownDeadline = now + 2000;  // 2 s after last ball
+            shooterSpinDownDeadline = now + 2000;
         }
         lastEjecting = ejecting;
 
@@ -280,26 +248,21 @@ public class TeleOp_pedro_pidf extends OpMode {
             wantIntake  = true;
         }
 
-        // Match old TeleOp behavior: shooter always on, intake follows logic
-        shooterOn = wantShooter;         // if you want auto behavior instead, use: shooterOn = wantShooter;
+        shooterOn = wantShooter;
         intakeOn  = wantIntake;
 
-        // ===== MANUAL FORCE-REGISTER FOR SPINDEXER (driver 2 bumpers) =====
+        // ===== FORCE-REGISTER (driver 2 bumpers) =====
         boolean lb2 = gamepad2.left_bumper;
         boolean rb2 = gamepad2.right_bumper;
 
-        if (lb2 && !prev2LeftBumper) {
-            spindexer.forceIntakeSlotGreen(telemetry);
-        }
-        if (rb2 && !prev2RightBumper) {
-            spindexer.forceIntakeSlotPurple(telemetry);
-        }
+        if (lb2 && !prev2LeftBumper) spindexer.forceIntakeSlotGreen(telemetry);
+        if (rb2 && !prev2RightBumper) spindexer.forceIntakeSlotPurple(telemetry);
 
         prev2LeftBumper = lb2;
         prev2RightBumper = rb2;
 
         // ===== TELEMETRY =====
-        SpindexerSubsystem.Ball[] s = spindexer.getSlots();
+        SpindexerSubsystem_State.Ball[] s = spindexer.getSlots(); // ✅ correct type
 
         readyForIntake = !spindexer.isEjecting() && !spindexer.isAutoRotating();
         telemetry.addData("Spd intakeSlot", spindexer.getIntakeSlotIndex());
@@ -312,7 +275,6 @@ public class TeleOp_pedro_pidf extends OpMode {
         telemetry.addData("Spd angle(enc)", "%.1f", spindexer.getCurrentAngleDeg());
         spindexer.debugAbsAngle(telemetry);
 
-        // shooter telemetry (performance only; PID values are finalized)
         double target = shooter.getTargetRpm();
         double current = shooter.getCurrentRpmEstimate();
         double error = target - current;
@@ -326,12 +288,10 @@ public class TeleOp_pedro_pidf extends OpMode {
         telemetry.addData("Pattern Tag", driverPatternTag);
         telemetry.addData("Pattern Order", spindexer.getGamePattern());
 
-        // Pedro follower debug
         telemetryM.debug("position", follower.getPose());
         telemetryM.debug("velocity", follower.getVelocity());
         telemetryM.debug("automatedDrive", automatedDrive);
 
-        // === DASHBOARD PACKET (for graphs) ===
         TelemetryPacket packet = new TelemetryPacket();
         packet.put("rpm", current);
         packet.put("target", target);

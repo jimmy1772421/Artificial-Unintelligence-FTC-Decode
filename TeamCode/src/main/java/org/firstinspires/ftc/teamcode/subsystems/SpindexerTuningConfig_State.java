@@ -11,7 +11,7 @@ public class SpindexerTuningConfig_State {
 
     // ----- Motion -----
     public static double MOVE_POWER = 0.50;
-    public static long MOVE_TIMEOUT_MS = 700;
+    public static long MOVE_TIMEOUT_MS = 1500;
 
     // ----- RUN_TO_POSITION Position PIDF -----
     // These control how aggressively the motor goes to a target position

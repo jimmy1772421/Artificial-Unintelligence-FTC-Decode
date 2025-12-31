@@ -26,7 +26,7 @@ public class SpindexerSubsystem_State {
     // ===== Abs encoder =====
     private static final double ABS_VREF = 3.3;
     private static final double ABS_MECH_OFFSET_DEG = 245.0;   // calibrate
-    private static final double ABS_REZERO_THRESHOLD_DEG = 3.0;
+    private static final double ABS_REZERO_THRESHOLD_DEG = 5.0;
 
     // ===== Internal state =====
     private final DcMotorEx motor;
@@ -66,8 +66,9 @@ public class SpindexerSubsystem_State {
     private double holdAngleDeg = 0.0;
 
     // ===== PIDF caching =====
-    private double lastPosP = Double.NaN;
-    private PIDFCoefficients lastVel = new PIDFCoefficients(0,0,0,0);
+    private PIDFCoefficients lastPos = new PIDFCoefficients(0, 0, 0, 0);
+    private PIDFCoefficients lastVel = new PIDFCoefficients(0, 0, 0, 0);
+
 
     // ===== Eject state machine (simple, non-blocking stub) =====
     private enum EjectState {
@@ -238,15 +239,17 @@ public class SpindexerSubsystem_State {
     public void periodic() {
         applyPidfIfChanged();
         updateMotion();
-        updateHold();                 // active correction while idle
+        updateHold();   // active hold while idle
 
-        // optional: keep model synced when totally idle
-        if (!isMoving() && !pendingAutoRotate && !manualIntakeQueued) {
-            verifyAndCorrectFromAbs();
-        }
+        // For tuning: DON'T constantly re-zero from the ABS encoder.
+        // We'll only correct (optionally) in updateMotion at the end of a move.
+        // if (!isMoving() && !pendingAutoRotate && !manualIntakeQueued) {
+        //     verifyAndCorrectFromAbs();
+        // }
 
         updateAutoRotateState();
     }
+
 
     // =========================
     // ACTIVE HOLD
@@ -343,6 +346,8 @@ public class SpindexerSubsystem_State {
         motor.setMode(DcMotor.RunMode.RUN_TO_POSITION);
         motor.setPower(power);
 
+        holdAngleDeg = angleDeg;  // ← This is already here and correct
+
         motionState = MotionState.MOVING;
         motionDeadlineMs = System.currentTimeMillis() + timeoutMs;
         pendingIntakeIndexOnFinish = intakeIndexOnFinish;
@@ -366,12 +371,17 @@ public class SpindexerSubsystem_State {
             }
             pendingIntakeIndexOnFinish = -1;
 
-            // if this was autoRotate move, clear flag when motion completes
             autoRotateInProgress = false;
 
+            // Do ABS correction if needed
             verifyAndCorrectFromAbs();
+
+            // DON'T update holdAngleDeg here - it's already set to the target angle
+            // DELETE THIS LINE:
+            // holdAngleDeg = getCurrentAngleDeg();
         }
     }
+
 
     // =========================
     // Angle helpers
@@ -527,14 +537,20 @@ public class SpindexerSubsystem_State {
     // Apply PIDF from Panels (only when changed)
     // =========================
     private void applyPidfIfChanged() {
-        if (SpindexerTuningConfig_State.POS_P != lastPosP) {
-            motor.setPIDFCoefficients(
-                    DcMotor.RunMode.RUN_TO_POSITION,
-                    new PIDFCoefficients(SpindexerTuningConfig_State.POS_P, 0, 0, 0)
-            );
-            lastPosP = SpindexerTuningConfig_State.POS_P;
+        // --- Position PIDF for RUN_TO_POSITION ---
+        PIDFCoefficients pos = new PIDFCoefficients(
+                SpindexerTuningConfig_State.POS_P,
+                SpindexerTuningConfig_State.POS_I,
+                SpindexerTuningConfig_State.POS_D,
+                SpindexerTuningConfig_State.POS_F
+        );
+
+        if (pos.p != lastPos.p || pos.i != lastPos.i || pos.d != lastPos.d || pos.f != lastPos.f) {
+            motor.setPIDFCoefficients(DcMotor.RunMode.RUN_TO_POSITION, pos);
+            lastPos = pos;
         }
 
+        // --- Velocity PIDF for RUN_USING_ENCODER (optional, mostly for flywheels) ---
         PIDFCoefficients vel = new PIDFCoefficients(
                 SpindexerTuningConfig_State.VEL_P,
                 SpindexerTuningConfig_State.VEL_I,
@@ -547,6 +563,7 @@ public class SpindexerSubsystem_State {
             lastVel = vel;
         }
     }
+
 
     // =========================
     // Pattern helper

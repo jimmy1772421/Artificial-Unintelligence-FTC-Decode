@@ -39,11 +39,14 @@ public class SpindexerSubsystem_State {
     private int zeroTicks = 0;
     private int intakeIndex = 0;
 
+    // ===== TARGET ANGLE - The ONE thing we chase =====
+    private double targetAngleDeg = 0.0;
+    private int cachedTargetTicks = 0;
+
     // Auto intake flags
     private boolean lastBallPresent = false;
     private boolean pendingAutoRotate = false;
     private long autoRotateTimeMs = 0;
-    private boolean autoRotateInProgress = false;
 
     // Eject flag (used by teleop)
     private boolean ejecting = false;
@@ -56,19 +59,9 @@ public class SpindexerSubsystem_State {
     private int gameTag = 0;
     private int patternStep = 0;
 
-    // ===== Motion state machine =====
-    private enum MotionState { IDLE, MOVING }
-    private MotionState motionState = MotionState.IDLE;
-    private long motionDeadlineMs = 0;
-    private int pendingIntakeIndexOnFinish = -1;
-
-    // ===== Active hold target =====
-    private double holdAngleDeg = 0.0;
-
     // ===== PIDF caching =====
     private PIDFCoefficients lastPos = new PIDFCoefficients(0, 0, 0, 0);
     private PIDFCoefficients lastVel = new PIDFCoefficients(0, 0, 0, 0);
-
 
     // ===== Eject state machine (simple, non-blocking stub) =====
     private enum EjectState {
@@ -78,6 +71,10 @@ public class SpindexerSubsystem_State {
 
     private EjectState ejectState = EjectState.IDLE;
     private long ejectEndTimeMs = 0;
+
+    // ===== ABS correction throttling =====
+    private long lastAbsCheckMs = 0;
+    private static final long ABS_CHECK_INTERVAL_MS = 500;  // Check every 500ms
 
     public SpindexerSubsystem_State(HardwareMap hardwareMap) {
         motor = hardwareMap.get(DcMotorEx.class, "spindexerMotor");
@@ -95,9 +92,9 @@ public class SpindexerSubsystem_State {
 
         autoZeroFromAbs();
 
-        // initial hold at slot0 intake
-        holdAngleDeg = slotCenterAngleAtIntake(0);
-        cmdIntakeSlot(0);
+        // Initial target: slot 0 at intake
+        targetAngleDeg = slotCenterAngleAtIntake(0);
+        updateTargetTicks();
     }
 
     // =========================
@@ -108,11 +105,15 @@ public class SpindexerSubsystem_State {
 
     public Ball[] getSlots() { return slots; }
     public int getEncoder() { return motor.getCurrentPosition(); }
-    public int getTarget() { return motor.getTargetPosition(); }
+    public int getTarget() { return cachedTargetTicks; }
     public int getIntakeSlotIndex() { return intakeIndex; }
 
-    public boolean isMoving() { return motionState != MotionState.IDLE; }
-    public boolean isAutoRotating() { return pendingAutoRotate || autoRotateInProgress; }
+    public boolean isMoving() {
+        int err = Math.abs(cachedTargetTicks - motor.getCurrentPosition());
+        return err > SpindexerTuningConfig_State.HOLD_DEADBAND_TICKS;
+    }
+
+    public boolean isAutoRotating() { return pendingAutoRotate; }
 
     public boolean isFull() {
         for (Ball b : slots) if (b == Ball.EMPTY) return false;
@@ -127,39 +128,20 @@ public class SpindexerSubsystem_State {
     public void clearSlot(int slotIndex) { slots[slotIndex] = Ball.EMPTY; }
     public boolean slotHasBall(int slotIndex) { return slots[slotIndex] != Ball.EMPTY; }
 
-    // ===== Commands for tuner / teleop =====
-    public boolean cmdIntakeSlot(int slot) {
+    // ===== Commands =====
+    public void cmdIntakeSlot(int slot) {
         slot = ((slot % SLOT_COUNT) + SLOT_COUNT) % SLOT_COUNT;
-        double angle = slotCenterAngleAtIntake(slot);
-        holdAngleDeg = angle;
-        return requestMoveToAngle(
-                angle,
-                SpindexerTuningConfig_State.MOVE_POWER,
-                SpindexerTuningConfig_State.MOVE_TIMEOUT_MS,
-                slot
-        );
+        setTargetAngle(slotCenterAngleAtIntake(slot), slot);
     }
 
-    public boolean cmdLoadSlot(int slot) {
+    public void cmdLoadSlot(int slot) {
         slot = ((slot % SLOT_COUNT) + SLOT_COUNT) % SLOT_COUNT;
         double angle = slotCenterAngleAtIntake(slot) + (LOAD_ANGLE - INTAKE_ANGLE);
-        holdAngleDeg = angle;
-        return requestMoveToAngle(
-                angle,
-                SpindexerTuningConfig_State.MOVE_POWER,
-                SpindexerTuningConfig_State.MOVE_TIMEOUT_MS,
-                -1
-        );
+        setTargetAngle(angle, -1);
     }
 
-    public boolean cmdAngle(double angleDeg) {
-        holdAngleDeg = angleDeg;
-        return requestMoveToAngle(
-                angleDeg,
-                SpindexerTuningConfig_State.MOVE_POWER,
-                SpindexerTuningConfig_State.MOVE_TIMEOUT_MS,
-                -1
-        );
+    public void cmdAngle(double angleDeg) {
+        setTargetAngle(angleDeg, -1);
     }
 
     // =========================
@@ -178,7 +160,6 @@ public class SpindexerSubsystem_State {
 
     /**
      * What the current AprilTag pattern means (for telemetry).
-     * "G" = green, "P" = purple, "?" = unknown/empty.
      */
     public String getGamePattern() {
         Ball[] pattern = getPatternForTag(gameTag);
@@ -196,8 +177,6 @@ public class SpindexerSubsystem_State {
 
     /**
      * Main state-machine update (call every loop from TeleOp).
-     *
-     * @return true if magazine is full (3 balls).
      */
     public boolean update(Telemetry telemetry,
                           LoaderSubsystem loader,
@@ -209,18 +188,16 @@ public class SpindexerSubsystem_State {
             this.gameTag = patternTagOverride;
         }
 
-        // Core motion & hold logic
+        // Core motion logic
         periodic();
 
-        // Simple non-blocking eject stub based on Y edge.
-        // This keeps "ejecting" valid for teleop shooter logic without blocking.
+        // Simple non-blocking eject stub
         long now = System.currentTimeMillis();
 
         if (yEdge && ejectState == EjectState.IDLE && hasAnyBall()) {
-            // Start eject window
             ejectState = EjectState.EJECTING;
             ejecting = true;
-            ejectEndTimeMs = now + 500;  // 0.5s "ejecting" window; adjust as you like
+            ejectEndTimeMs = now + 500;
         }
 
         if (ejectState == EjectState.EJECTING && now >= ejectEndTimeMs) {
@@ -228,76 +205,81 @@ public class SpindexerSubsystem_State {
             ejecting = false;
         }
 
-        // You can expand this later to do pattern-based slot selection and auto-loading.
-        // For now, we just return whether all 3 slots are marked as non-empty.
         return isFull();
     }
 
     // =========================
-    // PERIODIC (call every loop)
+    // PERIODIC (call every loop) - THE CORE
     // =========================
     public void periodic() {
         applyPidfIfChanged();
-        updateMotion();
-        updateHold();   // active hold while idle
-
-        // For tuning: DON'T constantly re-zero from the ABS encoder.
-        // We'll only correct (optionally) in updateMotion at the end of a move.
-        // if (!isMoving() && !pendingAutoRotate && !manualIntakeQueued) {
-        //     verifyAndCorrectFromAbs();
-        // }
-
-        updateAutoRotateState();
+        updateAutoRotate();
+        periodicAbsCheck();
+        chaseTarget();
     }
 
+    // =========================
+    // TARGET ANGLE MANAGEMENT
+    // =========================
+    private void setTargetAngle(double angleDeg, int newIntakeIndex) {
+        targetAngleDeg = angleDeg;
+        if (newIntakeIndex >= 0) {
+            intakeIndex = newIntakeIndex;
+        }
+        updateTargetTicks();
+    }
+
+    private void updateTargetTicks() {
+        cachedTargetTicks = shortestTicksToAngle(targetAngleDeg);
+    }
 
     // =========================
-    // ACTIVE HOLD
+    // CHASE TARGET (runs every loop)
     // =========================
-    private void updateHold() {
-        if (!SpindexerTuningConfig_State.HOLD_ENABLED) return;
-        if (motionState != MotionState.IDLE) return;  // don't fight moves
-        if (pendingAutoRotate || manualIntakeQueued) return;
-
-        int target = shortestTicksToAngle(holdAngleDeg);
-        int pos = motor.getCurrentPosition();
-        int err = target - pos;
+    private void chaseTarget() {
+        int current = motor.getCurrentPosition();
+        int err = cachedTargetTicks - current;
 
         if (Math.abs(err) <= SpindexerTuningConfig_State.HOLD_DEADBAND_TICKS) {
-            // close enough -> don't buzz
-            motor.setPower(0.0);
-            motor.setMode(DcMotor.RunMode.RUN_USING_ENCODER);
+            // Within deadband - stop buzzing
+            if (SpindexerTuningConfig_State.HOLD_ENABLED) {
+                motor.setPower(0.0);
+                motor.setMode(DcMotor.RunMode.RUN_USING_ENCODER);
+            }
             return;
         }
 
-        motor.setTargetPosition(target);
+        // Chase the target
+        motor.setTargetPosition(cachedTargetTicks);
         motor.setMode(DcMotor.RunMode.RUN_TO_POSITION);
-        motor.setPower(SpindexerTuningConfig_State.HOLD_POWER);
+
+        // Use different power based on whether we're moving or holding
+        double power = Math.abs(err) > 50
+                ? SpindexerTuningConfig_State.MOVE_POWER
+                : SpindexerTuningConfig_State.HOLD_POWER;
+
+        motor.setPower(power);
     }
 
     // =========================
     // Auto rotate (for intake behavior)
     // =========================
-    private void updateAutoRotateState() {
+    private void updateAutoRotate() {
         if (!pendingAutoRotate) return;
 
         long now = System.currentTimeMillis();
         if (now < autoRotateTimeMs) return;
-        if (motionState != MotionState.IDLE) return;
+
+        // Don't start auto-rotate if we're still moving from a previous command
+        if (isMoving()) return;
 
         pendingAutoRotate = false;
-        int nextIndex = (int) ((intakeIndex + 1) % SLOT_COUNT);
-
-        autoRotateInProgress = requestMoveToAngle(
-                slotCenterAngleAtIntake(nextIndex),
-                SpindexerTuningConfig_State.MOVE_POWER,
-                SpindexerTuningConfig_State.MOVE_TIMEOUT_MS,
-                nextIndex
-        );
+        int nextIndex = (intakeIndex + 1) % SLOT_COUNT;
+        setTargetAngle(slotCenterAngleAtIntake(nextIndex), nextIndex);
     }
 
     // =========================
-    // Manual intake helper (kept for your main teleop)
+    // Manual intake helper
     // =========================
     public void intakeOne(Telemetry telemetry, int tag) {
         this.gameTag = tag;
@@ -334,54 +316,6 @@ public class SpindexerSubsystem_State {
             }
         }
     }
-
-    // =========================
-    // Motion core (non-blocking)
-    // =========================
-    private boolean requestMoveToAngle(double angleDeg, double power, long timeoutMs, int intakeIndexOnFinish) {
-        if (motionState == MotionState.MOVING) return false;
-
-        int target = shortestTicksToAngle(angleDeg);
-        motor.setTargetPosition(target);
-        motor.setMode(DcMotor.RunMode.RUN_TO_POSITION);
-        motor.setPower(power);
-
-        holdAngleDeg = angleDeg;  // ← This is already here and correct
-
-        motionState = MotionState.MOVING;
-        motionDeadlineMs = System.currentTimeMillis() + timeoutMs;
-        pendingIntakeIndexOnFinish = intakeIndexOnFinish;
-
-        return true;
-    }
-
-    private void updateMotion() {
-        if (motionState != MotionState.MOVING) return;
-
-        long now = System.currentTimeMillis();
-        boolean timedOut = now >= motionDeadlineMs;
-
-        if (!motor.isBusy() || timedOut) {
-            motor.setPower(0);
-            motor.setMode(DcMotor.RunMode.RUN_USING_ENCODER);
-            motionState = MotionState.IDLE;
-
-            if (pendingIntakeIndexOnFinish >= 0) {
-                intakeIndex = pendingIntakeIndexOnFinish;
-            }
-            pendingIntakeIndexOnFinish = -1;
-
-            autoRotateInProgress = false;
-
-            // Do ABS correction if needed
-            verifyAndCorrectFromAbs();
-
-            // DON'T update holdAngleDeg here - it's already set to the target angle
-            // DELETE THIS LINE:
-            // holdAngleDeg = getCurrentAngleDeg();
-        }
-    }
-
 
     // =========================
     // Angle helpers
@@ -441,10 +375,20 @@ public class SpindexerSubsystem_State {
         int current = motor.getCurrentPosition();
         int revTicks = (int) Math.round(TICKS_PER_REV);
 
-        int diff = baseTicks - current;
-        int k = (int) Math.round((double) diff / revTicks);
+        // Find the equivalent position closest to current
+        // We want: baseTicks + k * revTicks where k minimizes distance
+        int diff = current - baseTicks;
+        int k = Math.round((float) diff / revTicks);
 
-        return baseTicks - k * revTicks;
+        return baseTicks + k * revTicks;
+    }
+
+    private void periodicAbsCheck() {
+        long now = System.currentTimeMillis();
+        if (now - lastAbsCheckMs < ABS_CHECK_INTERVAL_MS) return;
+
+        lastAbsCheckMs = now;
+        verifyAndCorrectFromAbs();
     }
 
     private void verifyAndCorrectFromAbs() {
@@ -455,11 +399,13 @@ public class SpindexerSubsystem_State {
 
         if (Math.abs(diff) > ABS_REZERO_THRESHOLD_DEG) {
             autoZeroFromAbs();
+            // After zero change, recalculate target ticks for same angle
+            updateTargetTicks();
         }
     }
 
     // =========================
-    // Color helpers (kept for your main teleop)
+    // Color helpers
     // =========================
     private boolean isBallPresent() {
         final double THRESH_CM = 5.0;
@@ -531,13 +477,14 @@ public class SpindexerSubsystem_State {
         telemetry.addData("Enc angle", "%.1f deg", encAngle);
         telemetry.addData("Abs offset", "%.1f deg", ABS_MECH_OFFSET_DEG);
         telemetry.addData("Intake slot index", intakeIndex);
+        telemetry.addData("Target angle", "%.1f deg", targetAngleDeg);
+        telemetry.addData("Target ticks", cachedTargetTicks);
     }
 
     // =========================
-    // Apply PIDF from Panels (only when changed)
+    // Apply PIDF from config
     // =========================
     private void applyPidfIfChanged() {
-        // --- Position PIDF for RUN_TO_POSITION ---
         PIDFCoefficients pos = new PIDFCoefficients(
                 SpindexerTuningConfig_State.POS_P,
                 SpindexerTuningConfig_State.POS_I,
@@ -550,7 +497,6 @@ public class SpindexerSubsystem_State {
             lastPos = pos;
         }
 
-        // --- Velocity PIDF for RUN_USING_ENCODER (optional, mostly for flywheels) ---
         PIDFCoefficients vel = new PIDFCoefficients(
                 SpindexerTuningConfig_State.VEL_P,
                 SpindexerTuningConfig_State.VEL_I,
@@ -564,24 +510,19 @@ public class SpindexerSubsystem_State {
         }
     }
 
-
     // =========================
     // Pattern helper
     // =========================
-    /**
-     * Returns desired shot color order for each tag.
-     * You can change these to match your actual game patterns.
-     */
     private Ball[] getPatternForTag(int tag) {
         switch (tag) {
-            case 21: // example pattern
+            case 21:
                 return new Ball[]{ Ball.GREEN, Ball.PURPLE, Ball.GREEN };
             case 22:
                 return new Ball[]{ Ball.PURPLE, Ball.GREEN, Ball.PURPLE };
             case 23:
                 return new Ball[]{ Ball.GREEN, Ball.GREEN, Ball.PURPLE };
             default:
-                return null; // "fast" mode / no pattern
+                return null;
         }
     }
 }

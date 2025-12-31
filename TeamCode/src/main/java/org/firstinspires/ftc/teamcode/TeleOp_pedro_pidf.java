@@ -14,11 +14,14 @@ import com.pedropathing.paths.Path;
 import com.pedropathing.paths.PathChain;
 import com.qualcomm.robotcore.eventloop.opmode.OpMode;
 import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
+import org.firstinspires.ftc.teamcode.subsystems.Drawing;
+import com.pedropathing.geometry.Pose;
+
 
 import org.firstinspires.ftc.teamcode.pedroPathing.Constants;
 import org.firstinspires.ftc.teamcode.subsystems.ShooterSubsystemPIDF;
 import org.firstinspires.ftc.teamcode.subsystems.LoaderSubsystem;
-import org.firstinspires.ftc.teamcode.subsystems.SpindexerSubsystem_State;
+import org.firstinspires.ftc.teamcode.subsystems.SpindexerSubsystem_State_new;
 import org.firstinspires.ftc.teamcode.subsystems.TurretSubsystem;
 import org.firstinspires.ftc.teamcode.subsystems.IntakeSubsystem_Motor;
 
@@ -40,7 +43,7 @@ public class TeleOp_pedro_pidf extends OpMode {
     // ===== SUBSYSTEMS =====
     private ShooterSubsystemPIDF shooter;
     private IntakeSubsystem_Motor intake;
-    private SpindexerSubsystem_State spindexer;
+    private SpindexerSubsystem_State_new spindexer;
     private LoaderSubsystem loader;
     private TurretSubsystem turret;
 
@@ -81,8 +84,18 @@ public class TeleOp_pedro_pidf extends OpMode {
     @Override
     public void init() {
         follower = Constants.createFollower(hardwareMap);
-        follower.setStartingPose(startingPose == null ? new Pose() : startingPose);
+
+// Init Panels field offsets for Pedro
+        Drawing.init();
+
+// Use TeleOp-specific startingPose if set; otherwise use Drawing's configurable pose
+        Pose startPose = (startingPose != null)
+                ? startingPose
+                : Drawing.getStartingPose();
+
+        follower.setStartingPose(startPose);
         follower.update();
+
 
         telemetryM = PanelsTelemetry.INSTANCE.getTelemetry();
 
@@ -100,7 +113,7 @@ public class TeleOp_pedro_pidf extends OpMode {
         shooter   = new ShooterSubsystemPIDF(hardwareMap);
         loader    = new LoaderSubsystem(hardwareMap);
         intake    = new IntakeSubsystem_Motor(hardwareMap);
-        spindexer = new SpindexerSubsystem_State(hardwareMap);
+        spindexer = new SpindexerSubsystem_State_new(hardwareMap);
         turret    = new TurretSubsystem(hardwareMap);
 
         dashboard = FtcDashboard.getInstance();
@@ -124,6 +137,11 @@ public class TeleOp_pedro_pidf extends OpMode {
         // ===== UPDATE PEDRO FOLLOWER =====
         follower.update();
         telemetryM.update();
+
+        // Draw robot pose + heading on Panels field
+        Drawing.drawRobot(follower.getPose());
+        Drawing.sendPacket();
+
 
         // ===== DRIVETRAIN =====
         double leftX  = gamepad2.left_stick_x;
@@ -214,7 +232,7 @@ public class TeleOp_pedro_pidf extends OpMode {
         turret.update();
 
         // ===== SPINDEXER STEP (state machine + PIDF + hold) =====
-        spindexer.periodic();
+        //spindexer.periodic();
 
         // Y starts eject sequence (edge)
         boolean yEdge = gamepad1.y && !prevY;
@@ -270,7 +288,7 @@ public class TeleOp_pedro_pidf extends OpMode {
         }
 
         shooterOn = wantShooter;
-        intakeOn  = wantIntake;
+        intakeOn  = true;
 
         // ===== FORCE-REGISTER (driver 2 bumpers) =====
         boolean lb2 = gamepad2.left_bumper;
@@ -283,7 +301,7 @@ public class TeleOp_pedro_pidf extends OpMode {
         prev2RightBumper = rb2;
 
         // ===== TELEMETRY =====
-        SpindexerSubsystem_State.Ball[] s = spindexer.getSlots();
+        SpindexerSubsystem_State_new.Ball[] s = spindexer.getSlots();
 
         readyForIntake = !spindexer.isEjecting() && !spindexer.isAutoRotating();
 

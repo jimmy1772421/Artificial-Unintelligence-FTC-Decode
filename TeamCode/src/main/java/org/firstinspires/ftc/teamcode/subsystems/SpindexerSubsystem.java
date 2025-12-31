@@ -46,7 +46,7 @@ public class SpindexerSubsystem {
 
     // Raw abs angle (deg) when SLOT 0 is perfectly at intake
     // i.e. absRaw == 260.7°  <=>  internal angle == 0°
-    private static final double ABS_MECH_OFFSET_DEG = 245.0; //maybe add 2-5 deg
+    private static final double ABS_MECH_OFFSET_DEG = 85.0; //maybe add 2-5 deg
 
     // ==== HARDWARE ====
 

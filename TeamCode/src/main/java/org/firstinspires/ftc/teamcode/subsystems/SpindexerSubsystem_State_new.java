@@ -52,7 +52,7 @@ public class SpindexerSubsystem_State_new {
     private static final double MAX_POWER = 0.5;
 
     // Analog abs encoder
-    private static final double ABS_VREF = 3.3; // REV analog reference
+    private static final double ABS_VREF = 3.3; // ELC analog reference
 
     // Raw abs angle (deg) when SLOT 0 is perfectly at intake
     // i.e. absRaw == 245°  <=>  internal angle == 0°

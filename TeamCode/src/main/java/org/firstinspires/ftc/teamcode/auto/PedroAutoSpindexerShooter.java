@@ -70,7 +70,7 @@ public class PedroAutoSpindexerShooter extends LinearOpMode {
 
         // --- Init loop: read tag for pattern order ---
         while (!isStarted() && !isStopRequested()) {
-            int p = vision.getPattern(); // 0/21/22/23
+            int p = vision.getPatternTag(); // 0/21/22/23
             if (p == 21 || p == 22 || p == 23) patternTag = p;
 
             telemetry.addLine("Init: scanning for motif tag 21/22/23 (pattern order)");

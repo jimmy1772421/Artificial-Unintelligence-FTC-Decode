@@ -40,7 +40,7 @@ public class TeleOp_pedro_pidf extends OpMode {
     // ===== SUBSYSTEMS =====
     private ShooterSubsystemPIDF shooter;
     private IntakeSubsystem_Motor intake;
-    private SpindexerSubsystem_State spindexer;   // ✅ use _State
+    private SpindexerSubsystem_State spindexer;
     private LoaderSubsystem loader;
     private TurretSubsystem turret;
 
@@ -48,7 +48,6 @@ public class TeleOp_pedro_pidf extends OpMode {
     private FtcDashboard dashboard;
 
     // ===== STATE VARIABLES =====
-    private boolean lastY = false;
     private boolean prev2a = false;
 
     private int fieldPos = 0;
@@ -59,6 +58,7 @@ public class TeleOp_pedro_pidf extends OpMode {
 
     // turret buttons (gamepad1)
     private boolean prevA, prevDpadL, prevDpadR;
+    private boolean turretManualOverride = false;
 
     boolean readyForIntake = true;
     private long shooterSpinDownDeadline = 0;
@@ -72,8 +72,11 @@ public class TeleOp_pedro_pidf extends OpMode {
 
     private boolean prev2LeftBumper = false;
     private boolean prev2RightBumper = false;
-    private boolean prevStart = false;
 
+    // Edge detection for gamepad1
+    private boolean prevStart = false;
+    private boolean prevY = false;
+    private boolean prevB1 = false;
 
     @Override
     public void init() {
@@ -94,11 +97,10 @@ public class TeleOp_pedro_pidf extends OpMode {
                 )
                 .build();
 
-        // ===== INIT SUBSYSTEMS =====
         shooter   = new ShooterSubsystemPIDF(hardwareMap);
         loader    = new LoaderSubsystem(hardwareMap);
         intake    = new IntakeSubsystem_Motor(hardwareMap);
-        spindexer = new SpindexerSubsystem_State(hardwareMap);  // ✅ use _State constructor
+        spindexer = new SpindexerSubsystem_State(hardwareMap);
         turret    = new TurretSubsystem(hardwareMap);
 
         dashboard = FtcDashboard.getInstance();
@@ -124,9 +126,9 @@ public class TeleOp_pedro_pidf extends OpMode {
         telemetryM.update();
 
         // ===== DRIVETRAIN =====
-        double leftX  = -gamepad2.left_stick_x;
-        double leftY  = -gamepad2.left_stick_y;
-        double rightX = -gamepad2.right_stick_x;
+        double leftX  = gamepad2.left_stick_x;
+        double leftY  = gamepad2.left_stick_y;
+        double rightX = gamepad2.right_stick_x;
 
         boolean a2 = gamepad2.a;
         if (a2 && !prev2a) slowMode = !slowMode;
@@ -135,6 +137,7 @@ public class TeleOp_pedro_pidf extends OpMode {
         double driveScale = slowMode ? 0.4 : 1.0;
 
         if (!automatedDrive) {
+            // Typical convention: forward is -leftY, strafe is -leftX, turn is -rightX
             follower.setTeleOpDrive(
                     -leftY * driveScale,
                     -leftX * driveScale,
@@ -143,6 +146,7 @@ public class TeleOp_pedro_pidf extends OpMode {
             );
         }
 
+        // ===== START BUTTON: begin path =====
         boolean startEdge = gamepad1.start && !prevStart;
         prevStart = gamepad1.start;
 
@@ -151,7 +155,11 @@ public class TeleOp_pedro_pidf extends OpMode {
             automatedDrive = true;
         }
 
-        if (automatedDrive && (gamepad1.bWasPressed() || !follower.isBusy())) {
+        // ===== Cancel auto path on B edge or end of path =====
+        boolean b1Edge = gamepad1.b && !prevB1;
+        prevB1 = gamepad1.b;
+
+        if (automatedDrive && (b1Edge || !follower.isBusy())) {
             follower.startTeleopDrive();
             automatedDrive = false;
         }
@@ -188,19 +196,29 @@ public class TeleOp_pedro_pidf extends OpMode {
         prevDpadL = dl;
         prevDpadR = dr;
 
+        // Manual turret stick (does NOT cancel auto unless you actually move the stick)
         double stickX = gamepad1.right_stick_x;
-        if (Math.abs(stickX) > 0.05) turret.setManualPower(stickX * 0.5);
+        boolean manualActive = Math.abs(stickX) > 0.05;
 
+        if (manualActive) {
+            turret.setManualPower(stickX * 0.5);
+            turretManualOverride = true;
+        } else {
+            // If we were manual last loop, explicitly stop the motor
+            if (turretManualOverride) {
+                turret.setManualPower(0.0);
+                turretManualOverride = false;
+            }
+        }
 
         turret.update();
 
-        // ===== SPINDEXER STEP (important for state machine) =====
-        // If your SpindexerSubsystem_State has periodic(), call it every loop:
+        // ===== SPINDEXER STEP (state machine + PIDF + hold) =====
         spindexer.periodic();
 
-        // Y starts eject sequence
-        boolean yEdge = gamepad1.y && !lastY;
-        lastY = gamepad1.y;
+        // Y starts eject sequence (edge)
+        boolean yEdge = gamepad1.y && !prevY;
+        prevY = gamepad1.y;
 
         // Rehome spindexer
         boolean rehomeButton = gamepad1.right_stick_button;
@@ -223,9 +241,12 @@ public class TeleOp_pedro_pidf extends OpMode {
         prev2Left = dLeft2;
         prev2Down = dDown2;
 
+        // State spindexer main update
         spindexerIsFull = spindexer.update(telemetry, loader, yEdge, driverPatternTag);
 
         // --- Eject / shooter timing ---
+
+
         boolean ejecting   = spindexer.isEjecting();
         boolean hasAnyBall = spindexer.hasAnyBall();
 
@@ -262,9 +283,10 @@ public class TeleOp_pedro_pidf extends OpMode {
         prev2RightBumper = rb2;
 
         // ===== TELEMETRY =====
-        SpindexerSubsystem_State.Ball[] s = spindexer.getSlots(); // ✅ correct type
+        SpindexerSubsystem_State.Ball[] s = spindexer.getSlots();
 
         readyForIntake = !spindexer.isEjecting() && !spindexer.isAutoRotating();
+
         telemetry.addData("Spd intakeSlot", spindexer.getIntakeSlotIndex());
         telemetry.addData("Spd readyForIntake", readyForIntake);
         telemetry.addData("Spd full", spindexer.isFull());

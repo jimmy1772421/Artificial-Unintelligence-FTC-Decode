@@ -1,126 +1,82 @@
 package org.firstinspires.ftc.teamcode.subsystems;
-import com.qualcomm.robotcore.hardware.PIDFCoefficients;
-
 
 import com.qualcomm.hardware.rev.RevColorSensorV3;
 import com.qualcomm.robotcore.hardware.AnalogInput;
 import com.qualcomm.robotcore.hardware.DcMotor;
 import com.qualcomm.robotcore.hardware.DcMotorEx;
 import com.qualcomm.robotcore.hardware.HardwareMap;
+import com.qualcomm.robotcore.hardware.PIDFCoefficients;
 
 import org.firstinspires.ftc.robotcore.external.Telemetry;
 import org.firstinspires.ftc.robotcore.external.navigation.DistanceUnit;
 
 public class SpindexerSubsystem_State {
 
-    public enum Ball {
-        EMPTY,
-        GREEN,
-        PURPLE,
-        UNKNOWN
-    }
+    public enum Ball { EMPTY, GREEN, PURPLE, UNKNOWN }
 
-    // Internal helper classification
-    private enum RawColor {
-        RED,
-        GREEN,
-        PURPLE
-    }
+    private enum RawColor { RED, GREEN, PURPLE }
 
-    // =========================
-    // MOTOR / GEOMETRY CONSTANTS
-    // =========================
-    private static final double TICKS_PER_REV = 383.6;
+    // ===== Geometry =====
+    private static final double TICKS_PER_REV = 383.6;     // goBILDA 435rpm integrated
     private static final double DEGREES_PER_SLOT = 120.0;
-    private static final double INTAKE_ANGLE = 0.0;   // "home" angle
-    private static final double LOAD_ANGLE   = 180.0;
+    private static final double INTAKE_ANGLE = 0.0;
+    private static final double LOAD_ANGLE = 180.0;
     private static final int SLOT_COUNT = 3;
-    private static final int TOLERANCE_TICKS = 10;
-    private static final double MOVE_POWER = 0.5;
 
-    // Analog abs encoder
-    private static final double ABS_VREF = 3.3; // REV analog reference
-    private static final double ABS_MECH_OFFSET_DEG = 245.0; // maybe add 2-5 deg
-
+    // ===== Abs encoder =====
+    private static final double ABS_VREF = 3.3;
+    private static final double ABS_MECH_OFFSET_DEG = 245.0;   // calibrate
     private static final double ABS_REZERO_THRESHOLD_DEG = 3.0;
 
-    // Motion timing
-    private static final long MOVE_TIMEOUT_MS = 700;
-
-    // If mag was full when started shooting
-    private static final long WAIT_BEFORE_LOADER_FULL_MS    = 200;
-    // If mag was NOT full when started shooting (give shooter more spin-up time)
-    private static final long WAIT_BEFORE_LOADER_PARTIAL_MS = 2000;
-    private static final long WAIT_AFTER_LOADER_MS  = 400;
-
-    // =========================
-    // HARDWARE
-    // =========================
+    // ===== Internal state =====
     private final DcMotorEx motor;
     private final RevColorSensorV3 intakeColor;
     private final RevColorSensorV3 intakeColor2;
     private final AnalogInput absEncoder;
 
-    // encoder value for angle 0° (intake) when slot 0 is at intake
-    private int zeroTicks = 0;
-
-    // which slot index is currently at intake (0,1,2)
-    private int intakeIndex = 0;
-
     private final Ball[] slots = new Ball[SLOT_COUNT];
 
-    // =========================
-    // AUTO-INTAKE STATE
-    // =========================
+    private int zeroTicks = 0;
+    private int intakeIndex = 0;
+
+    // Auto intake flags
     private boolean lastBallPresent = false;
     private boolean pendingAutoRotate = false;
     private long autoRotateTimeMs = 0;
+    private boolean autoRotateInProgress = false;
 
-    // Manual intake request (non-blocking version of intakeOne())
+    // Eject flag (used by teleop)
+    private boolean ejecting = false;
+
+    // Manual intake queue (not fully implemented, but kept for future use)
     private boolean manualIntakeQueued = false;
     private int manualIntakeQueuedTag = 0;
 
-    // =========================
-    // APRILTAG / PATTERN STATE
-    // =========================
-    // 23 = P, P, G
-    // 22 = P, G, P
-    // 21 = G, P, P
-    //  0 = no valid tag -> fastest possible logic
+    // Pattern tag / sequencer
     private int gameTag = 0;
+    private int patternStep = 0;
 
-    // =========================
-    // NON-BLOCKING MOTION STATE MACHINE
-    // =========================
+    // ===== Motion state machine =====
     private enum MotionState { IDLE, MOVING }
     private MotionState motionState = MotionState.IDLE;
     private long motionDeadlineMs = 0;
-    private int pendingIntakeIndexOnFinish = -1; // update intakeIndex when move ends (intake moves only)
+    private int pendingIntakeIndexOnFinish = -1;
 
-    // =========================
-    // NON-BLOCKING EJECT STATE MACHINE
-    // =========================
-    private enum EjectState {
-        IDLE,
-        SELECT_AND_MOVE_TO_LOAD,
-        MOVING_TO_LOAD,
-        WAIT_BEFORE_LOADER,
-        WAIT_AFTER_LOADER,
-        HOMING
-    }
+    // ===== Active hold target =====
+    private double holdAngleDeg = 0.0;
 
-    private boolean ejecting = false;
-    private EjectState ejectState = EjectState.IDLE;
-    private int ejectSlotIndex = 0;
-    private long ejectPhaseTimeMs = 0;
-
-    private int patternStep = 0;
-    private boolean startedWithFullMag = false;
-    private boolean firstShotDone = false;
-
+    // ===== PIDF caching =====
     private double lastPosP = Double.NaN;
     private PIDFCoefficients lastVel = new PIDFCoefficients(0,0,0,0);
 
+    // ===== Eject state machine (simple, non-blocking stub) =====
+    private enum EjectState {
+        IDLE,
+        EJECTING
+    }
+
+    private EjectState ejectState = EjectState.IDLE;
+    private long ejectEndTimeMs = 0;
 
     public SpindexerSubsystem_State(HardwareMap hardwareMap) {
         motor = hardwareMap.get(DcMotorEx.class, "spindexerMotor");
@@ -136,85 +92,248 @@ public class SpindexerSubsystem_State {
             slots[i] = Ball.EMPTY;
         }
 
-        // One-shot auto-zero at startup using absolute encoder
         autoZeroFromAbs();
 
-        // Non-blocking home request (will complete as update() runs)
-        homeToIntake();
+        // initial hold at slot0 intake
+        holdAngleDeg = slotCenterAngleAtIntake(0);
+        cmdIntakeSlot(0);
     }
 
     // =========================
-    // PUBLIC TAG API
+    // PUBLIC API
     // =========================
     public void setGameTag(int tag) { this.gameTag = tag; }
     public int getGameTag() { return gameTag; }
 
-    // =========================
-    // ABS ENCODER HELPERS
-    // =========================
-    private double getAbsAngleDeg() {
-        double v = absEncoder.getVoltage();
-        double angle = (v / ABS_VREF) * 360.0;
-        angle %= 360.0;
-        if (angle < 0) angle += 360.0;
-        return angle;
+    public Ball[] getSlots() { return slots; }
+    public int getEncoder() { return motor.getCurrentPosition(); }
+    public int getTarget() { return motor.getTargetPosition(); }
+    public int getIntakeSlotIndex() { return intakeIndex; }
+
+    public boolean isMoving() { return motionState != MotionState.IDLE; }
+    public boolean isAutoRotating() { return pendingAutoRotate || autoRotateInProgress; }
+
+    public boolean isFull() {
+        for (Ball b : slots) if (b == Ball.EMPTY) return false;
+        return true;
     }
 
-    private double normalizeAngle(double angleDeg) {
-        return (angleDeg % 360.0 + 360.0) % 360.0;
+    public boolean hasAnyBall() {
+        for (Ball b : slots) if (b != Ball.EMPTY) return true;
+        return false;
     }
 
-    private double smallestAngleDiff(double a, double b) {
-        double diff = a - b;
-        diff = (diff + 540.0) % 360.0 - 180.0;
-        return diff;
+    public void clearSlot(int slotIndex) { slots[slotIndex] = Ball.EMPTY; }
+    public boolean slotHasBall(int slotIndex) { return slots[slotIndex] != Ball.EMPTY; }
+
+    // ===== Commands for tuner / teleop =====
+    public boolean cmdIntakeSlot(int slot) {
+        slot = ((slot % SLOT_COUNT) + SLOT_COUNT) % SLOT_COUNT;
+        double angle = slotCenterAngleAtIntake(slot);
+        holdAngleDeg = angle;
+        return requestMoveToAngle(
+                angle,
+                SpindexerTuningConfig_State.MOVE_POWER,
+                SpindexerTuningConfig_State.MOVE_TIMEOUT_MS,
+                slot
+        );
     }
 
-    private void autoZeroFromAbs() {
-        double absRaw = getAbsAngleDeg();
-        double internalAngle = normalizeAngle(absRaw - ABS_MECH_OFFSET_DEG);
-
-        int currentTicks = motor.getCurrentPosition();
-        int internalTicks = (int) Math.round((internalAngle / 360.0) * TICKS_PER_REV);
-
-        zeroTicks = currentTicks - internalTicks;
-
-        double slotIndexF = internalAngle / DEGREES_PER_SLOT;
-        int nearestIndex = (int) Math.round(slotIndexF) % SLOT_COUNT;
-        if (nearestIndex < 0) nearestIndex += SLOT_COUNT;
-        intakeIndex = nearestIndex;
+    public boolean cmdLoadSlot(int slot) {
+        slot = ((slot % SLOT_COUNT) + SLOT_COUNT) % SLOT_COUNT;
+        double angle = slotCenterAngleAtIntake(slot) + (LOAD_ANGLE - INTAKE_ANGLE);
+        holdAngleDeg = angle;
+        return requestMoveToAngle(
+                angle,
+                SpindexerTuningConfig_State.MOVE_POWER,
+                SpindexerTuningConfig_State.MOVE_TIMEOUT_MS,
+                -1
+        );
     }
 
-    // =========================
-    // ANGLE / TICKS HELPERS
-    // =========================
-    private double ticksToAngle(int ticks) {
-        int relTicks = ticks - zeroTicks;
-        double revs = relTicks / TICKS_PER_REV;
-        double angle = revs * 360.0;
-        return normalizeAngle(angle);
-    }
-
-    public double getCurrentAngleDeg() {
-        return ticksToAngle(motor.getCurrentPosition());
-    }
-
-    private int shortestTicksToAngle(double angleDeg) {
-        double norm = normalizeAngle(angleDeg);
-        double desiredRevs = norm / 360.0;
-        int baseTicks = zeroTicks + (int)Math.round(desiredRevs * TICKS_PER_REV);
-
-        int current = motor.getCurrentPosition();
-        int revTicks = (int)Math.round(TICKS_PER_REV);
-
-        int diff = baseTicks - current;
-        int k = (int)Math.round((double)diff / revTicks);
-
-        return baseTicks - k * revTicks;
+    public boolean cmdAngle(double angleDeg) {
+        holdAngleDeg = angleDeg;
+        return requestMoveToAngle(
+                angleDeg,
+                SpindexerTuningConfig_State.MOVE_POWER,
+                SpindexerTuningConfig_State.MOVE_TIMEOUT_MS,
+                -1
+        );
     }
 
     // =========================
-    // NON-BLOCKING MOTION CORE
+    // TELEOP COMPAT WRAPPERS
+    // =========================
+
+    /** Non-blocking home: put slot 0 at intake. */
+    public void homeToIntake() {
+        cmdIntakeSlot(0);
+    }
+
+    /** True while the eject state machine is active. */
+    public boolean isEjecting() {
+        return ejecting;
+    }
+
+    /**
+     * What the current AprilTag pattern means (for telemetry).
+     * "G" = green, "P" = purple, "?" = unknown/empty.
+     */
+    public String getGamePattern() {
+        Ball[] pattern = getPatternForTag(gameTag);
+        if (pattern == null) return "Fast (no pattern, tag=" + gameTag + ")";
+
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < pattern.length; i++) {
+            if (i > 0) sb.append("-");
+            if (pattern[i] == Ball.PURPLE) sb.append("P");
+            else if (pattern[i] == Ball.GREEN) sb.append("G");
+            else sb.append("?");
+        }
+        return sb.toString();
+    }
+
+    /**
+     * Main state-machine update (call every loop from TeleOp).
+     *
+     * @return true if magazine is full (3 balls).
+     */
+    public boolean update(Telemetry telemetry,
+                          LoaderSubsystem loader,
+                          boolean yEdge,
+                          int patternTagOverride) {
+
+        // Allow driver override of gameTag
+        if (patternTagOverride != 0) {
+            this.gameTag = patternTagOverride;
+        }
+
+        // Core motion & hold logic
+        periodic();
+
+        // Simple non-blocking eject stub based on Y edge.
+        // This keeps "ejecting" valid for teleop shooter logic without blocking.
+        long now = System.currentTimeMillis();
+
+        if (yEdge && ejectState == EjectState.IDLE && hasAnyBall()) {
+            // Start eject window
+            ejectState = EjectState.EJECTING;
+            ejecting = true;
+            ejectEndTimeMs = now + 500;  // 0.5s "ejecting" window; adjust as you like
+        }
+
+        if (ejectState == EjectState.EJECTING && now >= ejectEndTimeMs) {
+            ejectState = EjectState.IDLE;
+            ejecting = false;
+        }
+
+        // You can expand this later to do pattern-based slot selection and auto-loading.
+        // For now, we just return whether all 3 slots are marked as non-empty.
+        return isFull();
+    }
+
+    // =========================
+    // PERIODIC (call every loop)
+    // =========================
+    public void periodic() {
+        applyPidfIfChanged();
+        updateMotion();
+        updateHold();                 // active correction while idle
+
+        // optional: keep model synced when totally idle
+        if (!isMoving() && !pendingAutoRotate && !manualIntakeQueued) {
+            verifyAndCorrectFromAbs();
+        }
+
+        updateAutoRotateState();
+    }
+
+    // =========================
+    // ACTIVE HOLD
+    // =========================
+    private void updateHold() {
+        if (!SpindexerTuningConfig_State.HOLD_ENABLED) return;
+        if (motionState != MotionState.IDLE) return;  // don't fight moves
+        if (pendingAutoRotate || manualIntakeQueued) return;
+
+        int target = shortestTicksToAngle(holdAngleDeg);
+        int pos = motor.getCurrentPosition();
+        int err = target - pos;
+
+        if (Math.abs(err) <= SpindexerTuningConfig_State.HOLD_DEADBAND_TICKS) {
+            // close enough -> don't buzz
+            motor.setPower(0.0);
+            motor.setMode(DcMotor.RunMode.RUN_USING_ENCODER);
+            return;
+        }
+
+        motor.setTargetPosition(target);
+        motor.setMode(DcMotor.RunMode.RUN_TO_POSITION);
+        motor.setPower(SpindexerTuningConfig_State.HOLD_POWER);
+    }
+
+    // =========================
+    // Auto rotate (for intake behavior)
+    // =========================
+    private void updateAutoRotateState() {
+        if (!pendingAutoRotate) return;
+
+        long now = System.currentTimeMillis();
+        if (now < autoRotateTimeMs) return;
+        if (motionState != MotionState.IDLE) return;
+
+        pendingAutoRotate = false;
+        int nextIndex = (int) ((intakeIndex + 1) % SLOT_COUNT);
+
+        autoRotateInProgress = requestMoveToAngle(
+                slotCenterAngleAtIntake(nextIndex),
+                SpindexerTuningConfig_State.MOVE_POWER,
+                SpindexerTuningConfig_State.MOVE_TIMEOUT_MS,
+                nextIndex
+        );
+    }
+
+    // =========================
+    // Manual intake helper (kept for your main teleop)
+    // =========================
+    public void intakeOne(Telemetry telemetry, int tag) {
+        this.gameTag = tag;
+        manualIntakeQueued = true;
+        manualIntakeQueuedTag = tag;
+        if (telemetry != null) {
+            telemetry.addData("ManualIntake", "Queued intakeOne(tag=%d)", tag);
+        }
+    }
+
+    // =========================
+    // FORCE intake slot color
+    // =========================
+    public void forceIntakeSlotGreen(Telemetry telemetry) {
+        forceIntakeSlotColor(telemetry, Ball.GREEN);
+    }
+
+    public void forceIntakeSlotPurple(Telemetry telemetry) {
+        forceIntakeSlotColor(telemetry, Ball.PURPLE);
+    }
+
+    private void forceIntakeSlotColor(Telemetry telemetry, Ball forcedColor) {
+        if (slots[intakeIndex] == Ball.EMPTY) {
+            slots[intakeIndex] = forcedColor;
+            if (telemetry != null) {
+                telemetry.addData("ForceIntake", "Slot %d forced to %s", intakeIndex, forcedColor);
+            }
+            pendingAutoRotate = true;
+            autoRotateTimeMs = System.currentTimeMillis() + 100;
+        } else {
+            if (telemetry != null) {
+                telemetry.addData("ForceIntake",
+                        "Slot %d not empty (=%s)", intakeIndex, slots[intakeIndex]);
+            }
+        }
+    }
+
+    // =========================
+    // Motion core (non-blocking)
     // =========================
     private boolean requestMoveToAngle(double angleDeg, double power, long timeoutMs, int intakeIndexOnFinish) {
         if (motionState == MotionState.MOVING) return false;
@@ -247,27 +366,90 @@ public class SpindexerSubsystem_State {
             }
             pendingIntakeIndexOnFinish = -1;
 
-            // Re-sync encoder model to abs encoder after any move (same as your old behavior)
+            // if this was autoRotate move, clear flag when motion completes
+            autoRotateInProgress = false;
+
             verifyAndCorrectFromAbs();
         }
     }
 
+    // =========================
+    // Angle helpers
+    // =========================
     private double slotCenterAngleAtIntake(int slotIndex) {
         return INTAKE_ANGLE + slotIndex * DEGREES_PER_SLOT;
     }
 
-    private boolean requestMoveSlotToIntake(int slotIndex, double power) {
-        double angle = slotCenterAngleAtIntake(slotIndex);
-        return requestMoveToAngle(angle, power, MOVE_TIMEOUT_MS, slotIndex);
+    private double getAbsAngleDeg() {
+        double v = absEncoder.getVoltage();
+        double angle = (v / ABS_VREF) * 360.0;
+        angle %= 360.0;
+        if (angle < 0) angle += 360.0;
+        return angle;
     }
 
-    private boolean requestMoveSlotToLoad(int slotIndex, double power) {
-        double angle = slotCenterAngleAtIntake(slotIndex) + (LOAD_ANGLE - INTAKE_ANGLE);
-        return requestMoveToAngle(angle, power, MOVE_TIMEOUT_MS, -1);
+    private double normalizeAngle(double angleDeg) {
+        return (angleDeg % 360.0 + 360.0) % 360.0;
+    }
+
+    private double smallestAngleDiff(double a, double b) {
+        double diff = a - b;
+        diff = (diff + 540.0) % 360.0 - 180.0;
+        return diff;
+    }
+
+    private void autoZeroFromAbs() {
+        double absRaw = getAbsAngleDeg();
+        double internalAngle = normalizeAngle(absRaw - ABS_MECH_OFFSET_DEG);
+
+        int currentTicks = motor.getCurrentPosition();
+        int internalTicks = (int) Math.round((internalAngle / 360.0) * TICKS_PER_REV);
+        zeroTicks = currentTicks - internalTicks;
+
+        double slotIndexF = internalAngle / DEGREES_PER_SLOT;
+        int nearestIndex = (int) Math.round(slotIndexF) % SLOT_COUNT;
+        if (nearestIndex < 0) nearestIndex += SLOT_COUNT;
+        intakeIndex = nearestIndex;
+    }
+
+    private double ticksToAngle(int ticks) {
+        int relTicks = ticks - zeroTicks;
+        double revs = relTicks / TICKS_PER_REV;
+        double angle = revs * 360.0;
+        return normalizeAngle(angle);
+    }
+
+    public double getCurrentAngleDeg() {
+        return ticksToAngle(motor.getCurrentPosition());
+    }
+
+    private int shortestTicksToAngle(double angleDeg) {
+        double norm = normalizeAngle(angleDeg);
+        double desiredRevs = norm / 360.0;
+        int baseTicks = zeroTicks + (int) Math.round(desiredRevs * TICKS_PER_REV);
+
+        int current = motor.getCurrentPosition();
+        int revTicks = (int) Math.round(TICKS_PER_REV);
+
+        int diff = baseTicks - current;
+        int k = (int) Math.round((double) diff / revTicks);
+
+        return baseTicks - k * revTicks;
+    }
+
+    private void verifyAndCorrectFromAbs() {
+        double absRaw = getAbsAngleDeg();
+        double absInternal = normalizeAngle(absRaw - ABS_MECH_OFFSET_DEG);
+        double encInternal = getCurrentAngleDeg();
+        double diff = smallestAngleDiff(encInternal, absInternal);
+
+        if (Math.abs(diff) > ABS_REZERO_THRESHOLD_DEG) {
+            autoZeroFromAbs();
+        }
     }
 
     // =========================
-    // COLOR / BALL HANDLING
+    // Color helpers (kept for your main teleop)
     // =========================
     private boolean isBallPresent() {
         final double THRESH_CM = 5.0;
@@ -287,21 +469,14 @@ public class SpindexerSubsystem_State {
         int b = sensor.blue();
 
         int sum = r + g + b;
-        if (sum < 50) {
-            return RawColor.RED;
-        }
+        if (sum < 50) return RawColor.RED;
 
         double rn = r / (double) sum;
         double gn = g / (double) sum;
         double bn = b / (double) sum;
 
-        boolean greenDominant =
-                (gn > rn + 0.05) &&
-                        (gn > bn + 0.02);
-
-        boolean redDominant =
-                (rn > gn + 0.10) &&
-                        (rn > bn + 0.05);
+        boolean greenDominant = (gn > rn + 0.05) && (gn > bn + 0.02);
+        boolean redDominant   = (rn > gn + 0.10) && (rn > bn + 0.05);
 
         if (greenDominant) return RawColor.GREEN;
         if (redDominant) return RawColor.RED;
@@ -317,416 +492,41 @@ public class SpindexerSubsystem_State {
         boolean present1 = !Double.isNaN(d1) && d1 <= THRESH_CM;
         boolean present2 = !Double.isNaN(d2) && d2 <= THRESH_CM;
 
-        if (!present1 && !present2) {
-            return Ball.EMPTY;
-        }
-
-        RevColorSensorV3 chosenSensor;
-        if (present1 && present2) chosenSensor = (d1 <= d2) ? intakeColor : intakeColor2;
-        else if (present1) chosenSensor = intakeColor;
-        else chosenSensor = intakeColor2;
-
-        RawColor raw = classifyColor(chosenSensor);
-
-        switch (raw) {
-            case GREEN:  return Ball.GREEN;
-            case PURPLE: return Ball.PURPLE;
-            case RED:
-            default:     return Ball.EMPTY;
-        }
-    }
-
-    private boolean isIntakeSlotAtIntakePosition() {
-        double desiredAngle = slotCenterAngleAtIntake(intakeIndex);
-        double currentAngle = getCurrentAngleDeg();
-
-        double diff = smallestAngleDiff(currentAngle, desiredAngle);
-        double tolDeg = 360.0 * TOLERANCE_TICKS / TICKS_PER_REV;
-        return Math.abs(diff) <= tolDeg;
-    }
-
-    // =========================
-    // PATTERN HELPERS
-    // =========================
-    private Ball[] getPatternForTag(int tag) {
-        Ball[] seq = new Ball[SLOT_COUNT];
-
-        switch (tag) {
-            case 23:
-                seq[0] = Ball.PURPLE; seq[1] = Ball.PURPLE; seq[2] = Ball.GREEN;
-                return seq;
-            case 22:
-                seq[0] = Ball.PURPLE; seq[1] = Ball.GREEN;  seq[2] = Ball.PURPLE;
-                return seq;
-            case 21:
-                seq[0] = Ball.GREEN;  seq[1] = Ball.PURPLE; seq[2] = Ball.PURPLE;
-                return seq;
-            default:
-                return null;
-        }
-    }
-
-    private int selectFastestNonEmptySlot(double currentAngle) {
-        int bestSlot = -1;
-        double bestDiff = Double.MAX_VALUE;
-
-        for (int i = 0; i < SLOT_COUNT; i++) {
-            if (!slotHasBall(i)) continue;
-
-            double targetAngle = slotCenterAngleAtIntake(i) + (LOAD_ANGLE - INTAKE_ANGLE);
-            double diff = Math.abs(smallestAngleDiff(targetAngle, currentAngle));
-
-            if (diff < bestDiff) {
-                bestDiff = diff;
-                bestSlot = i;
-            }
-        }
-        return bestSlot;
-    }
-
-    private int selectNextEjectSlotIndex() {
-        double currentAngle = getCurrentAngleDeg();
-
-        Ball[] pattern = getPatternForTag(gameTag);
-        boolean usePattern = (pattern != null && patternStep < pattern.length);
-
-        if (usePattern) {
-            Ball desired = pattern[patternStep];
-
-            int bestSlot = -1;
-            double bestDiff = Double.MAX_VALUE;
-
-            for (int i = 0; i < SLOT_COUNT; i++) {
-                if (slots[i] != desired) continue;
-
-                double targetAngle = slotCenterAngleAtIntake(i) + (LOAD_ANGLE - INTAKE_ANGLE);
-                double diff = Math.abs(smallestAngleDiff(targetAngle, currentAngle));
-
-                if (diff < bestDiff) {
-                    bestDiff = diff;
-                    bestSlot = i;
-                }
-            }
-
-            if (bestSlot != -1) return bestSlot;
-        }
-
-        return selectFastestNonEmptySlot(currentAngle);
-    }
-
-    // =========================
-    // MANUAL "intakeOne" (NOW NON-BLOCKING)
-    // =========================
-    public void intakeOne(Telemetry telemetry, int tag) {
-        this.gameTag = tag;
-        manualIntakeQueued = true;
-        manualIntakeQueuedTag = tag;
-
-        telemetry.addData("ManualIntake", "Queued intakeOne(tag=%d)", tag);
-    }
-
-    // =========================
-    // MAIN UPDATE (CALL EVERY LOOP)
-    // =========================
-    public boolean update(Telemetry telemetry,
-                          LoaderSubsystem loader,
-                          boolean yEdge,
-                          int patternTagOverride) {
-
-        // 1) Always advance motion first (this replaces all blocking waits)
-        updateMotion();
-
-        // --- Optional manual override for gameTag from driver ---
-        if (patternTagOverride == 21 ||
-                patternTagOverride == 22 ||
-                patternTagOverride == 23 ||
-                patternTagOverride == 0) {
-            gameTag = patternTagOverride;
-        }
-
-        // --- Handle eject button press ---
-        if (yEdge && !ejecting) {
-            // Cancel pending intake actions when eject begins
-            pendingAutoRotate = false;
-            manualIntakeQueued = false;
-
-            if (hasAnyBall()) {
-                startedWithFullMag = isFull();
-            } else {
-                // SPECIAL CASE: fake 3 shots
-                Ball[] pattern = getPatternForTag(gameTag);
-                if (pattern != null) {
-                    for (int i = 0; i < SLOT_COUNT; i++) slots[i] = pattern[i];
-                } else {
-                    for (int i = 0; i < SLOT_COUNT; i++) slots[i] = Ball.PURPLE;
-                }
-                startedWithFullMag = false; // force longer first-shot delay
-            }
-
-            ejecting = true;
-            ejectState = EjectState.SELECT_AND_MOVE_TO_LOAD;
-            patternStep = 0;
-            firstShotDone = false;
-        }
-
-        // =========================
-        // MANUAL INTAKE (queued) - non-blocking
-        // =========================
-        if (manualIntakeQueued && !ejecting) {
-            // Ensure we're aligned to intake before sampling
-            if (motionState == MotionState.IDLE && !isIntakeSlotAtIntakePosition()) {
-                requestMoveSlotToIntake(intakeIndex, MOVE_POWER);
-            } else if (motionState == MotionState.IDLE && isIntakeSlotAtIntakePosition()) {
-                Ball color = detectBallColor();
-                slots[intakeIndex] = color;
-
-                telemetry.addData("ManualIntake",
-                        "Slot %d = %s (tag=%d)", intakeIndex, color, manualIntakeQueuedTag);
-
-                pendingAutoRotate = true;
-                autoRotateTimeMs = System.currentTimeMillis() + 100;
-
-                manualIntakeQueued = false;
-            }
-        }
-
-        // =========================
-        // AUTO INTAKE (only when stable at intake)
-        // =========================
-        if (!isFull()
-                && !ejecting
-                && !manualIntakeQueued
-                && motionState == MotionState.IDLE
-                && isIntakeSlotAtIntakePosition()) {
-
-            boolean ballPresent = isBallPresent();
-
-            if (ballPresent && !lastBallPresent && slots[intakeIndex] == Ball.EMPTY) {
-                Ball color = detectBallColor();
-
-                if (color == Ball.GREEN || color == Ball.PURPLE) {
-                    slots[intakeIndex] = color;
-                    telemetry.addData("AutoIntake", "Slot %d = %s", intakeIndex, color);
-
-                    pendingAutoRotate = true;
-                    autoRotateTimeMs = System.currentTimeMillis() + 100;
-                } else {
-                    telemetry.addData("AutoIntake", "Ignored non-ball at slot %d", intakeIndex);
-                }
-            }
-
-            lastBallPresent = ballPresent;
-        }
-
-        // =========================
-        // Pending auto-rotate (now uses motion state machine)
-        // =========================
-        if (pendingAutoRotate
-                && !ejecting
-                && !manualIntakeQueued
-                && motionState == MotionState.IDLE
-                && System.currentTimeMillis() >= autoRotateTimeMs) {
-
-            pendingAutoRotate = false;
-            int nextIndex = (int) ((intakeIndex + 1) % SLOT_COUNT);
-            requestMoveSlotToIntake(nextIndex, MOVE_POWER);
-        }
-
-        // =========================
-        // EJECT STATE MACHINE (no blocking moves)
-        // =========================
-        if (ejecting) {
-            long now = System.currentTimeMillis();
-
-            switch (ejectState) {
-                case SELECT_AND_MOVE_TO_LOAD: {
-                    if (!hasAnyBall()) {
-                        homeToIntake();
-                        ejectState = EjectState.HOMING;
-                        break;
-                    }
-
-                    if (motionState != MotionState.IDLE) break;
-
-                    int nextSlot = selectNextEjectSlotIndex();
-                    if (nextSlot < 0 || nextSlot >= SLOT_COUNT) {
-                        homeToIntake();
-                        ejectState = EjectState.HOMING;
-                        break;
-                    }
-
-                    ejectSlotIndex = nextSlot;
-
-                    boolean started = requestMoveSlotToLoad(ejectSlotIndex, MOVE_POWER);
-                    if (started) {
-                        ejectState = EjectState.MOVING_TO_LOAD;
-                    }
-                    break;
-                }
-
-                case MOVING_TO_LOAD: {
-                    if (motionState != MotionState.IDLE) break;
-
-                    // Only use the long delay for the FIRST shot when we started partial
-                    long delayMs;
-                    if (!firstShotDone && !startedWithFullMag) delayMs = WAIT_BEFORE_LOADER_PARTIAL_MS;
-                    else delayMs = WAIT_BEFORE_LOADER_FULL_MS;
-
-                    ejectPhaseTimeMs = now + delayMs;
-                    ejectState = EjectState.WAIT_BEFORE_LOADER;
-                    break;
-                }
-
-                case WAIT_BEFORE_LOADER: {
-                    if (now >= ejectPhaseTimeMs) {
-                        loader.startCycle();
-                        firstShotDone = true;
-                        ejectPhaseTimeMs = now + WAIT_AFTER_LOADER_MS;
-                        ejectState = EjectState.WAIT_AFTER_LOADER;
-                    }
-                    break;
-                }
-
-                case WAIT_AFTER_LOADER: {
-                    if (now >= ejectPhaseTimeMs) {
-                        clearSlot(ejectSlotIndex);
-
-                        Ball[] pattern = getPatternForTag(gameTag);
-                        boolean usingPattern = (pattern != null);
-                        if (usingPattern) patternStep++;
-
-                        if (!hasAnyBall() || (usingPattern && patternStep >= pattern.length)) {
-                            homeToIntake();
-                            ejectState = EjectState.HOMING;
-                        } else {
-                            ejectState = EjectState.SELECT_AND_MOVE_TO_LOAD;
-                        }
-                    }
-                    break;
-                }
-
-                case HOMING: {
-                    if (motionState == MotionState.IDLE) {
-                        ejecting = false;
-                        startedWithFullMag = false;
-                        firstShotDone = false;
-                        ejectState = EjectState.IDLE;
-                    }
-                    break;
-                }
-
-                default:
-                case IDLE:
-                    break;
-            }
-        }
-
-        // Abs correction when totally idle (same intent as your old code)
-        if (motionState == MotionState.IDLE && !ejecting && !pendingAutoRotate && !manualIntakeQueued) {
-            verifyAndCorrectFromAbs();
-        }
-
-        return isFull();
-    }
-
-    // =========================
-    // SLOT HELPERS / GETTERS
-    // =========================
-    public Ball[] getSlots() { return slots; }
-    public int getEncoder() { return motor.getCurrentPosition(); }
-    public int getTarget() { return motor.getTargetPosition(); }
-    public int getIntakeIndex() { return intakeIndex; }
-    public boolean isEjecting() { return ejecting; }
-    public boolean isMoving() { return motionState != MotionState.IDLE; }
-
-    public boolean isFull() {
-        for (Ball b : slots) if (b == Ball.EMPTY) return false;
-        return true;
-    }
-
-    public boolean hasAnyBall() {
-        for (Ball b : slots) if (b != Ball.EMPTY) return true;
-        return false;
-    }
-
-    public boolean slotHasBall(int slotIndex) {
-        return slots[slotIndex] != Ball.EMPTY;
-    }
-
-    public void clearSlot(int slotIndex) {
-        slots[slotIndex] = Ball.EMPTY;
-    }
-
-    // =========================
-    // NON-BLOCKING HOME
-    // =========================
-    public void homeToIntake() {
-        // request move (non-blocking)
-        requestMoveSlotToIntake(0, MOVE_POWER);
-    }
-
-    // =========================
-    // ABS VERIFY / CORRECT
-    // =========================
-    private void verifyAndCorrectFromAbs() {
-        double absRaw = getAbsAngleDeg();
-        double absInternal = normalizeAngle(absRaw - ABS_MECH_OFFSET_DEG);
-        double encInternal = getCurrentAngleDeg();
-
-        double diff = smallestAngleDiff(encInternal, absInternal);
-
-        if (Math.abs(diff) > ABS_REZERO_THRESHOLD_DEG) {
-            autoZeroFromAbs();
-        }
-    }
-
-    //    FORCE SLOTS
-
-    public void forceIntakeSlotGreen(Telemetry telemetry) {
-        forceIntakeSlotColor(telemetry, Ball.GREEN);
-    }
-
-    public void forceIntakeSlotPurple(Telemetry telemetry) {
-        forceIntakeSlotColor(telemetry, Ball.PURPLE);
-    }
-
-    private void forceIntakeSlotColor(Telemetry telemetry, Ball forcedColor) {
-        // Only overwrite if this slot is currently empty
-        if (slots[intakeIndex] == Ball.EMPTY) {
-            slots[intakeIndex] = forcedColor;
-
-            if (telemetry != null) {
-                telemetry.addData("ForceIntake", "Slot %d forced to %s", intakeIndex, forcedColor);
-            }
-
-            // mimic normal auto-intake behavior: schedule auto-rotate
-            pendingAutoRotate = true;
-            autoRotateTimeMs = System.currentTimeMillis() + 100;
+        if (!present1 && !present2) return Ball.EMPTY;
+
+        RevColorSensorV3 chosen;
+        if (present1 && present2) {
+            chosen = (d1 <= d2) ? intakeColor : intakeColor2;
+        } else if (present1) {
+            chosen = intakeColor;
         } else {
-            if (telemetry != null) {
-                telemetry.addData("ForceIntake", "Slot %d not empty (=%s), ignore force %s",
-                        intakeIndex, slots[intakeIndex], forcedColor);
-            }
+            chosen = intakeColor2;
         }
+
+        RawColor raw = classifyColor(chosen);
+        if (raw == RawColor.GREEN) return Ball.GREEN;
+        if (raw == RawColor.PURPLE) return Ball.PURPLE;
+        return Ball.EMPTY;
     }
 
-
     // =========================
-    // DEBUG
+    // Debug
     // =========================
     public void debugAbsAngle(Telemetry telemetry) {
         double raw = getAbsAngleDeg();
         double corrected = normalizeAngle(raw - ABS_MECH_OFFSET_DEG);
         double encAngle = getCurrentAngleDeg();
         telemetry.addData("Abs raw", "%.1f deg", raw);
-        telemetry.addData("Abs corr (slot0@intake=0)", "%.1f deg", corrected);
+        telemetry.addData("Abs corr", "%.1f deg", corrected);
         telemetry.addData("Enc angle", "%.1f deg", encAngle);
         telemetry.addData("Abs offset", "%.1f deg", ABS_MECH_OFFSET_DEG);
         telemetry.addData("Intake slot index", intakeIndex);
     }
 
-    public void applyPidfIfChanged() {
-        // Position loop (RUN_TO_POSITION): only P used
+    // =========================
+    // Apply PIDF from Panels (only when changed)
+    // =========================
+    private void applyPidfIfChanged() {
         if (SpindexerTuningConfig_State.POS_P != lastPosP) {
             motor.setPIDFCoefficients(
                     DcMotor.RunMode.RUN_TO_POSITION,
@@ -735,7 +535,6 @@ public class SpindexerSubsystem_State {
             lastPosP = SpindexerTuningConfig_State.POS_P;
         }
 
-        // Velocity loop (RUN_USING_ENCODER)
         PIDFCoefficients vel = new PIDFCoefficients(
                 SpindexerTuningConfig_State.VEL_P,
                 SpindexerTuningConfig_State.VEL_I,
@@ -749,68 +548,23 @@ public class SpindexerSubsystem_State {
         }
     }
 
-    public boolean cmdIntakeSlot(int slot) {
-        slot = ((slot % 3) + 3) % 3;
-        return requestMoveSlotToIntake(slot, SpindexerTuningConfig_State.MOVE_POWER);
-    }
-
-    public boolean cmdLoadSlot(int slot) {
-        slot = ((slot % 3) + 3) % 3;
-        return requestMoveSlotToLoad(slot, SpindexerTuningConfig_State.MOVE_POWER);
-    }
-
-    public boolean cmdAngle(double angleDeg) {
-        return requestMoveToAngle(angleDeg, SpindexerTuningConfig_State.MOVE_POWER,
-                SpindexerTuningConfig_State.MOVE_TIMEOUT_MS, -1);
-    }
-
-    // Call this every loop in the tuner (and in your real teleop too)
-    public void periodic() {
-        applyPidfIfChanged();
-        updateMotion(); // your non-blocking motion stepper
-    }
-
-//    public boolean isMoving() {
-//        return motionState != MotionState.IDLE; // if you use this enum
-//    }
-    public int getIntakeSlotIndex() {
-        return intakeIndex; // <-- change if your field name differs
-    }
-
-    // If you already have some angle getter, return it here.
-// Otherwise compute it (this assumes you have motor/zeroTicks/TICKS_PER_REV and normalizeAngle()).
-//    public double getCurrentAngleDeg() {
-//        int ticks = motor.getCurrentPosition();  // <-- change motor name if different
-//        int relTicks = ticks - zeroTicks;        // <-- change zeroTicks name if different
-//        double revs = relTicks / TICKS_PER_REV;  // <-- change TICKS_PER_REV if different
-//        double angle = revs * 360.0;
-//        return normalizeAngle(angle);            // <-- if you don't have normalizeAngle(), I’ll give you one
-//    }
-
-
-    public String getGamePattern() {
-        Ball[] pattern = getPatternForTag(gameTag); // <-- if your helper/field names differ, rename them
-        if (pattern == null) return "Fast (no pattern, tag=" + gameTag + ")";
-
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < pattern.length; i++) {
-            if (i > 0) sb.append("-");
-            if (pattern[i] == Ball.PURPLE) sb.append("P");
-            else if (pattern[i] == Ball.GREEN) sb.append("G");
-            else sb.append("?");
+    // =========================
+    // Pattern helper
+    // =========================
+    /**
+     * Returns desired shot color order for each tag.
+     * You can change these to match your actual game patterns.
+     */
+    private Ball[] getPatternForTag(int tag) {
+        switch (tag) {
+            case 21: // example pattern
+                return new Ball[]{ Ball.GREEN, Ball.PURPLE, Ball.GREEN };
+            case 22:
+                return new Ball[]{ Ball.PURPLE, Ball.GREEN, Ball.PURPLE };
+            case 23:
+                return new Ball[]{ Ball.GREEN, Ball.GREEN, Ball.PURPLE };
+            default:
+                return null; // "fast" mode / no pattern
         }
-        return sb.toString();
     }
-
-    // True if we have an auto-rotate queued OR currently rotating due to that queue
-    public boolean isAutoRotating() {
-        // If you have a simple pending flag, this is enough:
-        return pendingAutoRotate;
-
-        // If you want it to also report "currently moving due to auto rotate",
-        // you can expand it like this (uncomment if you have motionState):
-        // return pendingAutoRotate || (motionState != MotionState.IDLE);
-    }
-
-
 }

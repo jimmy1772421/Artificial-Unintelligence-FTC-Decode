@@ -3,21 +3,24 @@ package org.firstinspires.ftc.teamcode;
 import com.qualcomm.robotcore.eventloop.opmode.OpMode;
 import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
 
+import com.bylazar.telemetry.PanelsTelemetry;
+import org.firstinspires.ftc.robotcore.external.Telemetry;
+
 import org.firstinspires.ftc.teamcode.subsystems.SpindexerSubsystem_State;
 import org.firstinspires.ftc.teamcode.subsystems.SpindexerTuningConfig_State;
+import org.firstinspires.ftc.teamcode.subsystems.IntakeSubsystem_Motor;
 
-
-@TeleOp(name="TUNE Spindexer PIDF (Panels)", group="Tuning")
+@TeleOp(name="TUNE Spindexer PIDF (Panels) _State", group="Tuning")
 public class SpindexerPIDFTunerTeleOp_State extends OpMode {
 
     private SpindexerSubsystem_State spindexer;
+    private IntakeSubsystem_Motor intake;
+    private Telemetry panelsTelemetry;   // <- Panels telemetry handle
 
     private int selectedSlot = 0;
 
-    // Edge detection
     private boolean prevA, prevB, prevX, prevY, prevDpadL, prevDpadR;
 
-    // Auto-cycle little state machine
     private enum CycleState { IDLE, MOVE_INTAKE, WAIT_SETTLE, MOVE_LOAD, WAIT_SETTLE_2 }
     private CycleState cycleState = CycleState.IDLE;
     private long stateDeadlineMs = 0;
@@ -25,6 +28,12 @@ public class SpindexerPIDFTunerTeleOp_State extends OpMode {
     @Override
     public void init() {
         spindexer = new SpindexerSubsystem_State(hardwareMap);
+        intake = new IntakeSubsystem_Motor(hardwareMap);
+        intake.startIntake();;
+
+        // === PANELS TELEMETRY SETUP ===
+        //panelsTelemetry = PanelsTelemetry.INSTANCE.telemetry;                 // Panels 1.0 style (@JvmField)
+        panelsTelemetry = PanelsTelemetry.INSTANCE.getTelemetry().getWrapper();
 
         telemetry.addLine("Spindexer PIDF Tuner Ready");
         telemetry.addLine("DPAD L/R: select slot (0/1/2)");
@@ -39,10 +48,9 @@ public class SpindexerPIDFTunerTeleOp_State extends OpMode {
     public void loop() {
         long now = System.currentTimeMillis();
 
-        // Always run the spindexer's periodic (this is what makes it non-blocking)
+        // Keep subsystem alive (PIDF apply, non-blocking motion, active hold)
         spindexer.periodic();
 
-        // ---- Button edges ----
         boolean aEdge = gamepad1.a && !prevA;
         boolean bEdge = gamepad1.b && !prevB;
         boolean xEdge = gamepad1.x && !prevX;
@@ -53,11 +61,9 @@ public class SpindexerPIDFTunerTeleOp_State extends OpMode {
         prevA = gamepad1.a; prevB = gamepad1.b; prevX = gamepad1.x; prevY = gamepad1.y;
         prevDpadL = gamepad1.dpad_left; prevDpadR = gamepad1.dpad_right;
 
-        // ---- Slot selection ----
-        if (leftEdge)  selectedSlot = (selectedSlot + 2) % 3; // -1 mod 3
+        if (leftEdge)  selectedSlot = (selectedSlot + 2) % 3;
         if (rightEdge) selectedSlot = (selectedSlot + 1) % 3;
 
-        // ---- Manual commands (disable auto-cycle state machine if you take manual control) ----
         if (aEdge) {
             cycleState = CycleState.IDLE;
             SpindexerTuningConfig_State.AUTO_CYCLE = false;
@@ -78,11 +84,9 @@ public class SpindexerPIDFTunerTeleOp_State extends OpMode {
 
         if (yEdge) {
             SpindexerTuningConfig_State.AUTO_CYCLE = !SpindexerTuningConfig_State.AUTO_CYCLE;
-            if (!SpindexerTuningConfig_State.AUTO_CYCLE) cycleState = CycleState.IDLE;
-            else cycleState = CycleState.MOVE_INTAKE;
+            cycleState = SpindexerTuningConfig_State.AUTO_CYCLE ? CycleState.MOVE_INTAKE : CycleState.IDLE;
         }
 
-        // ---- Auto-cycle (intake -> load -> next slot) ----
         if (SpindexerTuningConfig_State.AUTO_CYCLE) {
             switch (cycleState) {
                 case MOVE_INTAKE:
@@ -103,7 +107,6 @@ public class SpindexerPIDFTunerTeleOp_State extends OpMode {
 
                 case WAIT_SETTLE_2:
                     if (!spindexer.isMoving() && now >= stateDeadlineMs) {
-                        // advance to next slot
                         selectedSlot = (selectedSlot + 1) % 3;
                         cycleState = CycleState.MOVE_INTAKE;
                     }
@@ -116,7 +119,6 @@ public class SpindexerPIDFTunerTeleOp_State extends OpMode {
             }
         }
 
-        // ---- Telemetry you want while tuning ----
         int pos = spindexer.getEncoder();
         int tgt = spindexer.getTarget();
         int err = tgt - pos;
@@ -125,8 +127,10 @@ public class SpindexerPIDFTunerTeleOp_State extends OpMode {
         telemetry.addData("Auto Cycle", SpindexerTuningConfig_State.AUTO_CYCLE);
         telemetry.addData("Moving", spindexer.isMoving());
 
-        telemetry.addData("pos/tgt/err", "%d / %d / %d", pos, tgt, err);
-        telemetry.addData("angleDeg(enc)", "%.1f", spindexer.getCurrentAngleDeg());
+        telemetry.addData("sp_pos", pos);
+        telemetry.addData("sp_tgt", tgt);
+        telemetry.addData("sp_err", err);
+        telemetry.addData("sp_angle", spindexer.getCurrentAngleDeg());
 
         telemetry.addData("POS_P", SpindexerTuningConfig_State.POS_P);
         telemetry.addData("VEL_P/I/D/F", "%.2f %.2f %.2f %.2f",
@@ -136,6 +140,26 @@ public class SpindexerPIDFTunerTeleOp_State extends OpMode {
                 SpindexerTuningConfig_State.VEL_F
         );
 
+        telemetry.addData("HOLD", "%s pwr=%.2f db=%d",
+                SpindexerTuningConfig_State.HOLD_ENABLED,
+                SpindexerTuningConfig_State.HOLD_POWER,
+                SpindexerTuningConfig_State.HOLD_DEADBAND_TICKS
+        );
+
         telemetry.update();
+
+        // ========= PANELS GRAPH FEED =========
+        // Panels Graph looks for `<name>:<number>` in telemetry:
+        // addData("sp_err", err) -> "sp_err: 123"
+        panelsTelemetry.addData("sp_pos", pos);
+        panelsTelemetry.addData("sp_tgt", tgt);
+        panelsTelemetry.addData("sp_err", err);
+        panelsTelemetry.addData("sp_angle", spindexer.getCurrentAngleDeg());
+
+        // You can also throw in your tuning vars if you want them on the graph:
+        panelsTelemetry.addData("sp_POS_P", SpindexerTuningConfig_State.POS_P);
+        panelsTelemetry.addData("sp_HOLD_POWER", SpindexerTuningConfig_State.HOLD_POWER);
+
+        panelsTelemetry.update();
     }
 }

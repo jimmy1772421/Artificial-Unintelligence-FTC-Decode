@@ -22,7 +22,7 @@ public class LimelightPatternTest extends LinearOpMode {
         waitForStart();
 
         while (opModeIsActive()) {
-            int pattern = vision.getPattern();   // 0, 21, 22, or 23
+            int pattern = vision.getPatternTag();   // 0, 21, 22, or 23
 
             telemetry.addData("Raw Pattern", pattern);
 

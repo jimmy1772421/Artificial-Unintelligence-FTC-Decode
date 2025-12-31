@@ -1,3 +1,7 @@
+dependencies {
+    //compile "androidx.core:core-ktx:1.17.0"
+
+}
 import java.text.SimpleDateFormat
 
 //
@@ -26,6 +30,10 @@ android {
         targetCompatibility JavaVersion.VERSION_1_8
     }
     namespace = 'com.qualcomm.ftcrobotcontroller'
+    //kotlinOptions {
+    //    jvmTarget = '1.8'
+    //}
 }
 
 apply from: '../build.dependencies.gradle'
+apply plugin: 'org.jetbrains.kotlin.android'

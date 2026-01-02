@@ -81,14 +81,28 @@ public class TeleOp_pedro_pidf extends OpMode {
     private boolean prevY = false;
     private boolean prevB1 = false;
 
+    // ===== SHOOT POSES (tune these numbers) =====
+    public static Pose SHOOT_POSE_NEAR = new Pose(87, 87, Math.toRadians(45));
+    public static Pose SHOOT_POSE_FAR  = new Pose(84, 16, Math.toRadians(90));
+
+    // ===== SHOOT ASSIST STATE =====
+    private boolean shootAssistActive = false;
+    private boolean prevShootAssistBtn = false;
+    private Pose activeShootPose = SHOOT_POSE_NEAR;
+
+    private boolean autoFirePulse = false;
+    private long autoFireCooldownUntil = 0;
+
+
+
     @Override
     public void init() {
         follower = Constants.createFollower(hardwareMap);
 
-// Init Panels field offsets for Pedro
+        // Init Panels field offsets for Pedro
         Drawing.init();
 
-// Use TeleOp-specific startingPose if set; otherwise use Drawing's configurable pose
+        // Use TeleOp-specific startingPose if set; otherwise use Drawing's configurable pose
         Pose startPose = (startingPose != null)
                 ? startingPose
                 : Drawing.getStartingPose();
@@ -164,23 +178,46 @@ public class TeleOp_pedro_pidf extends OpMode {
             );
         }
 
-        // ===== START BUTTON: begin path =====
-        boolean startEdge = gamepad1.start && !prevStart;
-        prevStart = gamepad1.start;
+        // ===== SHOOT ASSIST (fieldPos: 0 near, 1 far) =====
+        boolean shootAssistBtn = gamepad2.y;
+        boolean shootAssistEdge = shootAssistBtn && !prevShootAssistBtn;
+        prevShootAssistBtn = shootAssistBtn;
 
-        if (startEdge) {
-            follower.followPath(pathChain.get());
-            automatedDrive = true;
-        }
-
-        // ===== Cancel auto path on B edge or end of path =====
         boolean b1Edge = gamepad1.b && !prevB1;
         prevB1 = gamepad1.b;
 
-        if (automatedDrive && (b1Edge || !follower.isBusy())) {
+        boolean driverOverride =
+                Math.abs(gamepad2.left_stick_x) > 0.2 ||
+                        Math.abs(gamepad2.left_stick_y) > 0.2 ||
+                        Math.abs(gamepad2.right_stick_x) > 0.2;
+
+        if (shootAssistEdge) {
+            if (!shootAssistActive) {
+                Pose target = (fieldPos == 0) ? SHOOT_POSE_NEAR : SHOOT_POSE_FAR;
+                startShootAssist(target);
+            } else {
+                cancelShootAssist();
+            }
+        }
+
+        if (shootAssistActive && (b1Edge || driverOverride)) {
+            cancelShootAssist();
+        }
+
+// If the path finished, give control back (but keep shoot mode active until you cancel)
+        if (shootAssistActive && automatedDrive && !follower.isBusy()) {
             follower.startTeleopDrive();
             automatedDrive = false;
         }
+
+        // ===== Y edge (user OR auto-fire pulse) =====
+        boolean yUser = gamepad1.y;
+        boolean yEdgeUser = yUser && !prevY;
+        prevY = yUser;
+
+        boolean yEdge = yEdgeUser || autoFirePulse;
+        autoFirePulse = false; // consume pulse
+
 
         // ===== SHOOTER FIELD POSITION TOGGLE =====
         boolean leftStickButton = gamepad1.left_stick_button;
@@ -234,10 +271,6 @@ public class TeleOp_pedro_pidf extends OpMode {
         // ===== SPINDEXER STEP (state machine + PIDF + hold) =====
         //spindexer.periodic();
 
-        // Y starts eject sequence (edge)
-        boolean yEdge = gamepad1.y && !prevY;
-        prevY = gamepad1.y;
-
         // Rehome spindexer
         boolean rehomeButton = gamepad1.right_stick_button;
         if (rehomeButton && !prevRehome) spindexer.homeToIntake();
@@ -258,6 +291,8 @@ public class TeleOp_pedro_pidf extends OpMode {
         prev2Right = dRight2;
         prev2Left = dLeft2;
         prev2Down = dDown2;
+
+
 
         // State spindexer main update
         spindexerIsFull = spindexer.update(telemetry, loader, yEdge, driverPatternTag);
@@ -300,6 +335,21 @@ public class TeleOp_pedro_pidf extends OpMode {
         prev2LeftBumper = lb2;
         prev2RightBumper = rb2;
 
+        if (shootAssistActive) {
+            boolean arrived = atPose(follower.getPose(), activeShootPose, 2.0, 6.0);
+
+            double target = shooter.getTargetRpm();
+            double current = shooter.getCurrentRpmEstimate();
+            boolean rpmReady = Math.abs(target - current) < 150;
+
+            if (arrived && rpmReady && now > autoFireCooldownUntil) {
+                autoFirePulse = true;          // fires NEXT loop via yEdge OR
+                autoFireCooldownUntil = now + 800;
+            }
+        }
+
+
+
         // ===== TELEMETRY =====
         SpindexerSubsystem_State_new.Ball[] s = spindexer.getSlots();
 
@@ -340,4 +390,46 @@ public class TeleOp_pedro_pidf extends OpMode {
 
         telemetry.update();
     }
+
+    private PathChain buildLineToPose(Pose target) {
+        return follower.pathBuilder()
+                .addPath(new Path(new BezierLine(follower::getPose, target))) // straight line
+                .setHeadingInterpolation(
+                        HeadingInterpolator.linearFromPoint(
+                                follower::getHeading,
+                                target.getHeading(),
+                                0.8
+                        )
+                )
+                .build();
+    }
+
+    private void startShootAssist(Pose target) {
+        activeShootPose = target;
+        follower.followPath(buildLineToPose(target));
+        automatedDrive = true;
+        shootAssistActive = true;
+    }
+
+    private void cancelShootAssist() {
+        follower.startTeleopDrive();
+        automatedDrive = false;
+        shootAssistActive = false;
+    }
+
+    private static double wrapRad(double r) {
+        while (r > Math.PI) r -= 2.0 * Math.PI;
+        while (r < -Math.PI) r += 2.0 * Math.PI;
+        return r;
+    }
+
+    private boolean atPose(Pose cur, Pose target, double posTolIn, double headingTolDeg) {
+        double dx = cur.getX() - target.getX();
+        double dy = cur.getY() - target.getY();
+        double dist = Math.hypot(dx, dy);
+
+        double dh = Math.toDegrees(Math.abs(wrapRad(cur.getHeading() - target.getHeading())));
+        return dist <= posTolIn && dh <= headingTolDeg;
+    }
+
 }

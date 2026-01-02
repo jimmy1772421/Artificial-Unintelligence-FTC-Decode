@@ -54,12 +54,21 @@ public class RedAutoUp extends OpMode {
     // ============================
     private final Pose startPose   = new Pose(109, 134, Math.toRadians(90));
     private final Pose scorePose   = new Pose(87, 87, Math.toRadians(45));
-    private final Pose pickup1Pose = new Pose(19, 84, Math.toRadians(0));
-    private final Pose pickup2Pose = new Pose(17.7, 59, Math.toRadians(0));
-    private final Pose pickup3Pose = new Pose(17.7, 35, Math.toRadians(0));
+    private final Pose prePickup1Pose = new Pose(99, 83.5, Math.toRadians(0));
+    private final Pose pickup1Pose = new Pose(124, 83.5, Math.toRadians(0));
+    private final Pose prePickup2Pose = new Pose(99, 59, Math.toRadians(0));
+    private final Pose pickup2Pose = new Pose(124, 59, Math.toRadians(0));
+    private final Pose prePickup3Pose = new Pose(99, 35, Math.toRadians(0));
+    private final Pose pickup3Pose = new Pose(124, 35, Math.toRadians(0));
 
     private Path scorePreload;
-    private PathChain grabPickup1, scorePickup1, grabPickup2, scorePickup2, grabPickup3, scorePickup3;
+    private PathChain goPrePickup1, creepToPickup1, scorePickup1, goPrePickup2, creepToPickup2,
+            scorePickup2, goPrePickup3, creepToPickup3, scorePickup3;
+
+    //Power in path
+    private static final double PWR_FAST  = 0.85;
+    private static final double PWR_CREEP = 0.35;
+
 
     // ===== TURRET PRE-SHOOT HOLD =====
     public static boolean HOLD_TURRET_90_UNTIL_SCOREPOSE = true;
@@ -85,30 +94,48 @@ public class RedAutoUp extends OpMode {
         scorePreload = new Path(new BezierLine(startPose, scorePose));
         scorePreload.setLinearHeadingInterpolation(startPose.getHeading(), scorePose.getHeading());
 
-        grabPickup1 = follower.pathBuilder()
-                .addPath(new Path(new BezierLine(scorePose, pickup1Pose)))
-                .setLinearHeadingInterpolation(scorePose.getHeading(), pickup1Pose.getHeading())
+        goPrePickup1 = follower.pathBuilder()
+                .addPath(new Path(new BezierLine(scorePose, prePickup1Pose)))
+                .setLinearHeadingInterpolation(scorePose.getHeading(), prePickup1Pose.getHeading())
                 .build();
+
+        creepToPickup1 = follower.pathBuilder()
+                .addPath(new Path(new BezierLine(prePickup1Pose, pickup1Pose)))
+                .setLinearHeadingInterpolation(prePickup1Pose.getHeading(), pickup1Pose.getHeading())
+                .build();
+
 
         scorePickup1 = follower.pathBuilder()
                 .addPath(new Path(new BezierLine(pickup1Pose, scorePose)))
                 .setLinearHeadingInterpolation(pickup1Pose.getHeading(), scorePose.getHeading())
                 .build();
 
-        grabPickup2 = follower.pathBuilder()
-                .addPath(new Path(new BezierLine(scorePose, pickup2Pose)))
-                .setLinearHeadingInterpolation(scorePose.getHeading(), pickup2Pose.getHeading())
+        goPrePickup2 = follower.pathBuilder()
+                .addPath(new Path(new BezierLine(scorePose, prePickup2Pose)))
+                .setLinearHeadingInterpolation(scorePose.getHeading(), prePickup2Pose.getHeading())
                 .build();
+
+        creepToPickup2 = follower.pathBuilder()
+                .addPath(new Path(new BezierLine(prePickup2Pose, pickup2Pose)))
+                .setLinearHeadingInterpolation(prePickup2Pose.getHeading(), pickup2Pose.getHeading())
+                .build();
+
 
         scorePickup2 = follower.pathBuilder()
                 .addPath(new Path(new BezierLine(pickup2Pose, scorePose)))
                 .setLinearHeadingInterpolation(pickup2Pose.getHeading(), scorePose.getHeading())
                 .build();
 
-        grabPickup3 = follower.pathBuilder()
-                .addPath(new Path(new BezierLine(scorePose, pickup3Pose)))
-                .setLinearHeadingInterpolation(scorePose.getHeading(), pickup3Pose.getHeading())
+        goPrePickup3 = follower.pathBuilder()
+                .addPath(new Path(new BezierLine(scorePose, prePickup3Pose)))
+                .setLinearHeadingInterpolation(scorePose.getHeading(), prePickup3Pose.getHeading())
                 .build();
+
+        creepToPickup3 = follower.pathBuilder()
+                .addPath(new Path(new BezierLine(prePickup1Pose, pickup1Pose)))
+                .setLinearHeadingInterpolation(prePickup2Pose.getHeading(), pickup2Pose.getHeading())
+                .build();
+
 
         scorePickup3 = follower.pathBuilder()
                 .addPath(new Path(new BezierLine(pickup3Pose, scorePose)))
@@ -128,8 +155,15 @@ public class RedAutoUp extends OpMode {
 
             case 1:
                 if (!follower.isBusy()) {
-                    follower.followPath(grabPickup1, true);
-                    setPathState(2);
+                    follower.followPath(goPrePickup1, PWR_FAST, false);
+                    setPathState(11); // new state
+                }
+                break;
+
+            case 11:
+                if (!follower.isBusy()) {
+                    follower.followPath(creepToPickup1, PWR_CREEP, true); // hold at pickup
+                    setPathState(2); // then continue with your normal “scorePickup1”
                 }
                 break;
 
@@ -142,8 +176,15 @@ public class RedAutoUp extends OpMode {
 
             case 3:
                 if (!follower.isBusy()) {
-                    follower.followPath(grabPickup2, true);
-                    setPathState(4);
+                    follower.followPath(goPrePickup2, PWR_FAST, false);
+                    setPathState(11); // new state
+                }
+                break;
+
+            case 31:
+                if (!follower.isBusy()) {
+                    follower.followPath(creepToPickup2, PWR_CREEP, true); // hold at pickup
+                    setPathState(2); // then continue with your normal “scorePickup1”
                 }
                 break;
 
@@ -156,8 +197,15 @@ public class RedAutoUp extends OpMode {
 
             case 5:
                 if (!follower.isBusy()) {
-                    follower.followPath(grabPickup3, true);
-                    setPathState(6);
+                    follower.followPath(goPrePickup3, PWR_FAST, false);
+                    setPathState(11); // new state
+                }
+                break;
+
+            case 51:
+                if (!follower.isBusy()) {
+                    follower.followPath(creepToPickup3, PWR_CREEP, true); // hold at pickup
+                    setPathState(2); // then continue with your normal “scorePickup1”
                 }
                 break;
 

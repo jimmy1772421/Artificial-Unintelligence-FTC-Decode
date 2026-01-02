@@ -14,6 +14,7 @@ import com.qualcomm.robotcore.util.Range;
 import org.firstinspires.ftc.teamcode.pedroPathing.Constants;
 import org.firstinspires.ftc.teamcode.subsystems.TurretSubsystem;
 import org.firstinspires.ftc.teamcode.subsystems.VisionSubsystem;
+import org.firstinspires.ftc.teamcode.subsystems.PoseStorage;
 
 import com.bylazar.field.FieldManager;
 import com.bylazar.field.PanelsField;
@@ -53,9 +54,9 @@ public class RedAutoUp extends OpMode {
     // ============================
     private final Pose startPose   = new Pose(109, 134, Math.toRadians(90));
     private final Pose scorePose   = new Pose(87, 87, Math.toRadians(45));
-    private final Pose pickup1Pose = new Pose(19, 84, Math.toRadians(180));
-    private final Pose pickup2Pose = new Pose(17.7, 59, Math.toRadians(180));
-    private final Pose pickup3Pose = new Pose(17.7, 35, Math.toRadians(180));
+    private final Pose pickup1Pose = new Pose(19, 84, Math.toRadians(0));
+    private final Pose pickup2Pose = new Pose(17.7, 59, Math.toRadians(0));
+    private final Pose pickup3Pose = new Pose(17.7, 35, Math.toRadians(0));
 
     private Path scorePreload;
     private PathChain grabPickup1, scorePickup1, grabPickup2, scorePickup2, grabPickup3, scorePickup3;
@@ -294,6 +295,7 @@ public class RedAutoUp extends OpMode {
 
         drawRobotOnPanels(follower.getPose());
         autonomousPathUpdate();
+        PoseStorage.lastPose = follower.getPose();
 
         telemetry.addData("pathState", pathState);
         telemetry.addData("pose", follower.getPose());
@@ -305,6 +307,7 @@ public class RedAutoUp extends OpMode {
     @Override
     public void stop() {
         // safety stop
+        PoseStorage.lastPose = follower.getPose();
         if (turret != null) turret.setManualPower(0.0);
     }
 

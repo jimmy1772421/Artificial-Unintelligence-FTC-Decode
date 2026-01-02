@@ -25,6 +25,7 @@ import org.firstinspires.ftc.teamcode.subsystems.SpindexerSubsystem_State_new;
 import org.firstinspires.ftc.teamcode.subsystems.TurretSubsystem;
 import org.firstinspires.ftc.teamcode.subsystems.IntakeSubsystem_Motor;
 import org.firstinspires.ftc.teamcode.subsystems.VisionSubsystem;
+import org.firstinspires.ftc.teamcode.subsystems.PoseStorage;
 
 import java.util.function.Supplier;
 
@@ -85,7 +86,7 @@ public class TeleOp_pedro_pidf extends OpMode {
 
     // ===== SHOOT POSES (tune these numbers) =====
     public static Pose SHOOT_POSE_NEAR = new Pose(87, 87, Math.toRadians(45));
-    public static Pose SHOOT_POSE_FAR  = new Pose(84, 16, Math.toRadians(90));
+    public static Pose SHOOT_POSE_FAR  = new Pose(84, 16, Math.toRadians(65));
 
     // ===== SHOOT ASSIST STATE =====
     private boolean shootAssistActive = false;
@@ -125,10 +126,11 @@ public class TeleOp_pedro_pidf extends OpMode {
         // Init Panels field offsets for Pedro
         Drawing.init();
 
-        // Use TeleOp-specific startingPose if set; otherwise use Drawing's configurable pose
-        Pose startPose = (startingPose != null)
-                ? startingPose
-                : Drawing.getStartingPose();
+        // Use Auto's passed on starting pose or TeleOp-specific startingPose if set; otherwise use Drawing's configurable pose
+        Pose startPose =
+                (PoseStorage.lastPose != null) ? PoseStorage.lastPose :
+                        (startingPose != null) ? startingPose :
+                                Drawing.getStartingPose();
 
         follower.setStartingPose(startPose);
         follower.update();
@@ -443,8 +445,8 @@ public class TeleOp_pedro_pidf extends OpMode {
             }
         }
 
-
-
+        //record pose
+        PoseStorage.lastPose = follower.getPose();
 
         // ===== TELEMETRY =====
         SpindexerSubsystem_State_new.Ball[] s = spindexer.getSlots();

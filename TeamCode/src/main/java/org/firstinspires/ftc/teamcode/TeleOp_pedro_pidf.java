@@ -15,7 +15,6 @@ import com.pedropathing.paths.PathChain;
 import com.qualcomm.robotcore.eventloop.opmode.OpMode;
 import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
 import org.firstinspires.ftc.teamcode.subsystems.Drawing;
-import com.pedropathing.geometry.Pose;
 import com.qualcomm.robotcore.util.Range;
 
 
@@ -103,12 +102,15 @@ public class TeleOp_pedro_pidf extends OpMode {
     // ===== TURRET OWNER STATE =====
     private boolean turretPositionCommandActive = false; // true after goToAngle until close enough
 
-    // Tunables (Dashboard if you want)
+    // Tunables
     public static int TRACK_TAG_ID = 24;
-    public static double TRACK_KP = 0.02;          // power per deg of tx
-    public static double TRACK_MAX_POWER = 0.25;   // clamp
-    public static double TRACK_TX_DEADBAND = 0.5;  // deg
+    // ===== Vision->Turret angle tracking (camera on turret) =====
+    public static double TX_DEADBAND_DEG = 0.5;     // ignore tiny tx noise
+    public static double TX_MAX_STEP_DEG = 2.0;     // max deg to change target per loop (smooth)
+    public static double TX_SIGN = 1.0;             // flip to -1.0 if it turns the wrong way
     public static double TURRET_ANGLE_TOL_DEG = 3.0;
+
+    public static double TRACK_TX_DEADBAND = 0.5;  // deg
 
     // ===== POST-PATH ACTIONS (auto home + relocalize once) =====
     private boolean postPathActionsDone = false;
@@ -281,65 +283,69 @@ public class TeleOp_pedro_pidf extends OpMode {
         if (intakeOn) intake.startIntake();
         else intake.stopIntake();
 
-        // ===== TOGGLE TURRET TRACK MODE =====
+        // ===== TOGGLE TURRET TRACK MODE (gamepad1.x) =====
         boolean toggleTrack = gamepad1.x;
         if (toggleTrack && !prevTurretTrackToggle) {
             turretTrackEnabled = !turretTrackEnabled;
         }
         prevTurretTrackToggle = toggleTrack;
 
-
-        // ===== TURRET CONTROL (manual vs position vs vision track) =====
+// ===== PRESET ANGLES (edge) =====
         boolean a  = gamepad1.a;
         boolean dl = gamepad1.dpad_left;
         boolean dr = gamepad1.dpad_right;
 
-        // Any time you issue a goToAngle, mark position mode as active
-        // (do this right after your a/dl/dr goToAngle calls)
-        if (a && !prevA) { turret.goToAngle(0.0);   turretPositionCommandActive = true; }
-        if (dl && !prevDpadL) { turret.goToAngle(90.0);  turretPositionCommandActive = true; }
-        if (dr && !prevDpadR) { turret.goToAngle(-90.0); turretPositionCommandActive = true; }
+        boolean aEdge  = a  && !prevA;
+        boolean dlEdge = dl && !prevDpadL;
+        boolean drEdge = dr && !prevDpadR;
 
-        // Clear position active once we’re close enough
-        if (turretPositionCommandActive) {
-            double err = turret.getTargetAngleDeg() - turret.getCurrentAngleDeg();
-            if (Math.abs(err) < TURRET_ANGLE_TOL_DEG) turretPositionCommandActive = false;
-        }
+        prevA = a;
+        prevDpadL = dl;
+        prevDpadR = dr;
 
+        if (aEdge)  { turret.goToAngle(0.0);   turretPositionCommandActive = true; }
+        if (dlEdge) { turret.goToAngle(90.0);  turretPositionCommandActive = true; }
+        if (drEdge) { turret.goToAngle(-90.0); turretPositionCommandActive = true; }
+
+// ===== MANUAL vs TRACKING vs HOLD =====
         double stickX = gamepad1.right_stick_x;
         boolean manualActive = Math.abs(stickX) > 0.05;
 
         if (manualActive) {
-            // 1) Manual overrides everything
+            // Manual wins; also disable tracking while driver is actively steering turret
+            turretTrackEnabled = false;
+            turretPositionCommandActive = false;
+
             turret.setManualPower(stickX * 0.5);
             turretManualOverride = true;
-            turretPositionCommandActive = false; // manual cancels position “ownership”
-        } else if (turretPositionCommandActive) {
-            // 2) Let RUN_TO_POSITION finish — DO NOT call setManualPower(0) here
-            // (motor will keep doing its thing)
+
         } else if (turretTrackEnabled) {
-            // 3) Vision tracking (only when stick quiet AND not in position command)
+            // Camera is on turret => tx is basically "degrees you need to turn"
             double tx = vision.getTagTxDegOrNaN(TRACK_TAG_ID);
 
-            if (Double.isNaN(tx)) {
-                // no tag -> stop
-                turret.setManualPower(0.0);
-                turretManualOverride = false;
+            // If we see tag and tx is meaningful, walk the target angle toward it
+            if (!Double.isNaN(tx) && Math.abs(tx) > TX_DEADBAND_DEG) {
+                double step = Range.clip(TX_SIGN * tx, -TX_MAX_STEP_DEG, TX_MAX_STEP_DEG);
+                double newTarget = turret.getCurrentAngleDeg() + step;
+                turret.goToAngle(newTarget);
+                turretPositionCommandActive = true; // we are actively commanding angles
             } else {
-                if (Math.abs(tx) < TRACK_TX_DEADBAND) {
-                    turret.setManualPower(0.0);
-                    turretManualOverride = false;
-                } else {
-                    double pwr = Range.clip(TRACK_KP * tx, -TRACK_MAX_POWER, TRACK_MAX_POWER);
-
-                    // If your turret moves the wrong direction, flip the sign:
-                    // pwr = -pwr;
-                    turret.setManualPower(pwr);
-                    turretManualOverride = true;
-                }
+                // no tag / tiny tx -> just hold where you are
+                turret.goToAngle(turret.getCurrentAngleDeg());
+                turretPositionCommandActive = true;
             }
+
+            turretManualOverride = false;
+
+        } else if (turretPositionCommandActive) {
+            // Let RUN_TO_POSITION finish
+            double err = turret.getTargetAngleDeg() - turret.getCurrentAngleDeg();
+            if (Math.abs(err) < TURRET_ANGLE_TOL_DEG) {
+                turretPositionCommandActive = false;
+            }
+
         } else {
-            // 0) Default behavior: stop when stick quiet
+            // Default: stick idle + not tracking => stop motor (your old behavior)
             if (turretManualOverride) {
                 turret.setManualPower(0.0);
                 turretManualOverride = false;
@@ -347,6 +353,7 @@ public class TeleOp_pedro_pidf extends OpMode {
         }
 
         turret.update();
+
 
 
         // ===== SPINDEXER STEP (state machine + PIDF + hold) =====
@@ -429,6 +436,10 @@ public class TeleOp_pedro_pidf extends OpMode {
             if (postPathActionsDone && turretAtZero && arrived && rpmReady && now > autoFireCooldownUntil) {
                 autoFirePulse = true;
                 autoFireCooldownUntil = now + 800;
+            }
+
+            if (postPathActionsDone && turretAtZero) {
+                turretTrackEnabled = true;
             }
         }
 

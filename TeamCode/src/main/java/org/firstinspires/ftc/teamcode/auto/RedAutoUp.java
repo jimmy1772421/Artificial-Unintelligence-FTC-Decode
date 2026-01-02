@@ -60,6 +60,23 @@ public class RedAutoUp extends OpMode {
     private Path scorePreload;
     private PathChain grabPickup1, scorePickup1, grabPickup2, scorePickup2, grabPickup3, scorePickup3;
 
+    // ===== TURRET PRE-SHOOT HOLD =====
+    public static boolean HOLD_TURRET_90_UNTIL_SCOREPOSE = true;
+
+    // If true: turret faces a FIELD heading (deg). If false: turret just goes to +90 deg turret angle.
+    public static boolean HOLD_FIELD_CENTRIC = true;
+
+    // the field direction you want the turret to face before first shot
+    public static double HOLD_FIELD_DEG = 90.0;
+
+    // if not field-centric, turret angle to hold
+    public static double HOLD_TURRET_DEG = 90.0;
+
+    // how close to scorePose counts as "arrived"
+    public static double SCOREPOSE_POS_TOL_IN = 2.0;
+    public static double SCOREPOSE_HEAD_TOL_DEG = 8.0;
+
+
     // ============================
     // ===== PATH BUILDING ========
     // ============================
@@ -170,7 +187,23 @@ public class RedAutoUp extends OpMode {
     // ============================
     // ===== TURRET TRACKING ======
     // ============================
-    private void updateTurretTracking() {
+    private void updateTurretControl() {
+
+        // Before first shooting pose: hold turret facing 90° (optional)
+        boolean reachedScorePose = atPose(follower.getPose(), scorePose, SCOREPOSE_POS_TOL_IN, SCOREPOSE_HEAD_TOL_DEG);
+
+        if (HOLD_TURRET_90_UNTIL_SCOREPOSE && !reachedScorePose) {
+            // IMPORTANT: do NOT run vision tracking yet
+            if (HOLD_FIELD_CENTRIC) {
+                double tgt = turretAngleToFaceFieldDeg(HOLD_FIELD_DEG);
+                turret.goToAngle(tgt);
+            } else {
+                turret.goToAngle(HOLD_TURRET_DEG);
+            }
+            return;
+        }
+
+        // After scorePose: run your normal tracking (optional toggle at top)
         if (!ENABLE_TURRET_TRACKING) {
             turret.setManualPower(0.0);
             return;
@@ -178,7 +211,6 @@ public class RedAutoUp extends OpMode {
 
         double tx = vision.getTagTxDegOrNaN(TRACK_TAG_ID);
 
-        // If we don't see tag 24, stop turret
         if (Double.isNaN(tx) || Math.abs(tx) < TRACK_TX_DEADBAND) {
             turret.setManualPower(0.0);
             return;
@@ -186,9 +218,31 @@ public class RedAutoUp extends OpMode {
 
         double power = TRACK_SIGN * TRACK_KP * tx;
         power = Range.clip(power, -TRACK_MAX_POWER, TRACK_MAX_POWER);
-
         turret.setManualPower(power);
     }
+
+
+    private static double wrapDeg(double a) {
+        while (a >= 180) a -= 360;
+        while (a < -180) a += 360;
+        return a;
+    }
+
+    private boolean atPose(Pose cur, Pose target, double posTolIn, double headTolDeg) {
+        double dx = cur.getX() - target.getX();
+        double dy = cur.getY() - target.getY();
+        double dist = Math.hypot(dx, dy);
+
+        double dhDeg = Math.toDegrees(wrapDeg(cur.getHeading() - target.getHeading()));
+        return dist <= posTolIn && Math.abs(dhDeg) <= headTolDeg;
+    }
+
+    /** Turret angle needed so camera/turret faces a fixed FIELD direction. */
+    private double turretAngleToFaceFieldDeg(double fieldDeg) {
+        double robotHeadingDeg = Math.toDegrees(follower.getPose().getHeading());
+        return wrapDeg(fieldDeg - robotHeadingDeg);
+    }
+
 
     // ============================
     // ===== OPMODE LIFECYCLE =====
@@ -234,7 +288,8 @@ public class RedAutoUp extends OpMode {
         follower.update();
 
         // keep turret tracking the entire time (optional toggle at top)
-        updateTurretTracking();
+        updateTurretControl();
+
         turret.update();
 
         drawRobotOnPanels(follower.getPose());

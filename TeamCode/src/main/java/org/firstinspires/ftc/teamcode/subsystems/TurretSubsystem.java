@@ -223,6 +223,31 @@ public class TurretSubsystem {
         turretMotor.setPower(MAX_AUTO_POWER);
     }
 
+    // ===== Tracking mode =====
+    private boolean trackEnabled = false;
+
+    public void setTrackEnabled(boolean enabled) {
+        trackEnabled = enabled;
+    }
+
+    public boolean isTrackEnabled() {
+        return trackEnabled;
+    }
+
+    /** Call every loop when camera is on turret. */
+    public void trackWithTxDeg(double txDeg) {
+        if (!trackEnabled) return;
+
+        // basic noise gate
+        if (Double.isNaN(txDeg) || Math.abs(txDeg) < 0.4) {
+            return; // just keep current target
+        }
+
+        // Since camera is on turret: tx ~= turret error in degrees
+        double newTarget = getCurrentAngleDeg() + txDeg;  // flip sign if needed
+        goToAngle(newTarget);
+    }
+
 
     /**
      * Call this every loop from TeleOp / Auto.

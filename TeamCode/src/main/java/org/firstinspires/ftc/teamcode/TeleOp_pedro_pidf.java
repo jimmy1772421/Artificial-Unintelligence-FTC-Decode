@@ -113,6 +113,14 @@ public class TeleOp_pedro_pidf extends OpMode {
 
     public static double TRACK_TX_DEADBAND = 0.5;  // deg
 
+    private enum TurretAimMode { MANUAL_HOLD, VISION_TRACK, ODO_FACE_POINT }
+    private TurretAimMode turretAimMode = TurretAimMode.MANUAL_HOLD;
+
+    // Point you want to face in odometry mode (Pedro coords)
+    public static double ODO_FACE_X = 132.0;
+    public static double ODO_FACE_Y = 136.0;
+
+
     // ===== POST-PATH ACTIONS (auto home + relocalize once) =====
     private boolean postPathActionsDone = false;
     private long postPathActionsTimeMs = 0;
@@ -286,11 +294,18 @@ public class TeleOp_pedro_pidf extends OpMode {
         else intake.stopIntake();
 
         // ===== TOGGLE TURRET TRACK MODE (gamepad1.x) =====
-        boolean toggleTrack = gamepad1.x;
-        if (toggleTrack && !prevTurretTrackToggle) {
-            turretTrackEnabled = !turretTrackEnabled;
+        boolean modeBtn = gamepad1.x;
+        boolean modeEdge = modeBtn && !prevTurretTrackToggle;
+        prevTurretTrackToggle = modeBtn;
+
+        if (modeEdge) {
+            switch (turretAimMode) {
+                case MANUAL_HOLD:      turretAimMode = TurretAimMode.VISION_TRACK; break;
+                case VISION_TRACK:     turretAimMode = TurretAimMode.ODO_FACE_POINT; break;
+                case ODO_FACE_POINT:   turretAimMode = TurretAimMode.MANUAL_HOLD; break;
+            }
         }
-        prevTurretTrackToggle = toggleTrack;
+
 
 // ===== PRESET ANGLES (edge) =====
         boolean a  = gamepad1.a;
@@ -305,56 +320,71 @@ public class TeleOp_pedro_pidf extends OpMode {
         prevDpadL = dl;
         prevDpadR = dr;
 
-        if (aEdge)  { turret.goToAngle(0.0);   turretPositionCommandActive = true; }
-        if (dlEdge) { turret.goToAngle(90.0);  turretPositionCommandActive = true; }
-        if (drEdge) { turret.goToAngle(-90.0); turretPositionCommandActive = true; }
+        if (aEdge)  { turretAimMode = TurretAimMode.MANUAL_HOLD; turret.goToAngle(0.0);   turretPositionCommandActive = true; }
+        if (dlEdge) { turretAimMode = TurretAimMode.MANUAL_HOLD; turret.goToAngle(90.0);  turretPositionCommandActive = true; }
+        if (drEdge) { turretAimMode = TurretAimMode.MANUAL_HOLD; turret.goToAngle(-90.0); turretPositionCommandActive = true; }
 
-// ===== MANUAL vs TRACKING vs HOLD =====
+
+        // ===== MANUAL vs TRACKING vs HOLD =====
         double stickX = gamepad1.right_stick_x;
         boolean manualActive = Math.abs(stickX) > 0.05;
 
+    // If driver touches stick, manual always wins (and sets mode back to manual hold)
         if (manualActive) {
-            // Manual wins; also disable tracking while driver is actively steering turret
-            turretTrackEnabled = false;
-            turretPositionCommandActive = false;
-
+            turretAimMode = TurretAimMode.MANUAL_HOLD;
+            turretPositionCommandActive = false;   // cancel any position ownership
             turret.setManualPower(stickX * 0.5);
             turretManualOverride = true;
 
-        } else if (turretTrackEnabled) {
-            // Camera is on turret => tx is basically "degrees you need to turn"
-            double tx = vision.getTagTxDegOrNaN(TRACK_TAG_ID);
-
-            // If we see tag and tx is meaningful, walk the target angle toward it
-            if (!Double.isNaN(tx) && Math.abs(tx) > TX_DEADBAND_DEG) {
-                double step = Range.clip(TX_SIGN * tx, -TX_MAX_STEP_DEG, TX_MAX_STEP_DEG);
-                double newTarget = turret.getCurrentAngleDeg() + step;
-                turret.goToAngle(newTarget);
-                turretPositionCommandActive = true; // we are actively commanding angles
-            } else {
-                // no tag / tiny tx -> just hold where you are
-                turret.goToAngle(turret.getCurrentAngleDeg());
-                turretPositionCommandActive = true;
-            }
-
-            turretManualOverride = false;
-
-        } else if (turretPositionCommandActive) {
-            // Let RUN_TO_POSITION finish
-            double err = turret.getTargetAngleDeg() - turret.getCurrentAngleDeg();
-            if (Math.abs(err) < TURRET_ANGLE_TOL_DEG) {
-                turretPositionCommandActive = false;
-            }
-
         } else {
-            // Default: stick idle + not tracking => stop motor (your old behavior)
-            if (turretManualOverride) {
-                turret.setManualPower(0.0);
-                turretManualOverride = false;
+            // No manual input: choose behavior by mode
+            switch (turretAimMode) {
+
+                case VISION_TRACK: {
+                    // Use best goal tag (20/24). Much more reliable than hardcoding 24.
+                    double tx = vision.getGoalTxDegOrNaN();
+
+                    if (!Double.isNaN(tx) && Math.abs(tx) > TX_DEADBAND_DEG) {
+                        double step = Range.clip(TX_SIGN * tx, -TX_MAX_STEP_DEG, TX_MAX_STEP_DEG);
+                        turret.goToAngle(turret.getCurrentAngleDeg() + step);
+                        turretPositionCommandActive = true;
+                    } else {
+                        // hold where you are
+                        turret.goToAngle(turret.getCurrentAngleDeg());
+                        turretPositionCommandActive = true;
+                    }
+                    turretManualOverride = false;
+                    break;
+                }
+
+                case ODO_FACE_POINT: {
+                    // Face (132,136) in Pedro coords using follower pose
+                    turret.faceTarget(ODO_FACE_X, ODO_FACE_Y, follower.getPose());
+                    turretPositionCommandActive = true;
+                    turretManualOverride = false;
+                    break;
+                }
+
+                case MANUAL_HOLD:
+                default: {
+                    // Let a preset RUN_TO_POSITION finish if one is active
+                    if (turretPositionCommandActive) {
+                        double err = turret.getTargetAngleDeg() - turret.getCurrentAngleDeg();
+                        if (Math.abs(err) < TURRET_ANGLE_TOL_DEG) turretPositionCommandActive = false;
+                    } else {
+                        // Only send a stop once after manual was used
+                        if (turretManualOverride) {
+                            turret.setManualPower(0.0);
+                            turretManualOverride = false;
+                        }
+                    }
+                    break;
+                }
             }
         }
 
         turret.update();
+
 
 
 
@@ -483,6 +513,10 @@ public class TeleOp_pedro_pidf extends OpMode {
         telemetryM.debug("position", follower.getPose());
         telemetryM.debug("velocity", follower.getVelocity());
         telemetryM.debug("automatedDrive", automatedDrive);
+        telemetry.addData("TurretMode", turretAimMode);
+        telemetry.addData("TurretAngle", "%.1f", turret.getCurrentAngleDeg());
+        telemetry.addData("TurretTarget", "%.1f", turret.getTargetAngleDeg());
+
 
         TelemetryPacket packet = new TelemetryPacket();
         packet.put("rpm", current);

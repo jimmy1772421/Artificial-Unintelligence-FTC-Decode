@@ -149,8 +149,9 @@ public class ShooterSubsystemPIDF {
                 light.setColor(2);   // spinning but not yet at speed
             }
         } else {
-            stop();
             light.setColor(1);       // off
+            stop();
+
         }
     }
 

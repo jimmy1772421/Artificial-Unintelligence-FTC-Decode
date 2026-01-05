@@ -43,7 +43,7 @@ public class TurretSubsystem {
 
     // Abs encoder calibration:
     // raw abs angle (0..360) when turret is at "0°" (centered / your chosen zero)
-    private static final double ZERO_ABS_DEG = 115.3;   // calibrate
+    private static final double ZERO_ABS_DEG = 62.2;   // calibrate
 
     public static double OFFSET_TRIM_DEG = 0.0;
     // Flip if abs increases opposite your positive turret direction
@@ -105,10 +105,10 @@ public class TurretSubsystem {
 
         maxVoltage = turretAbs.getMaxVoltage();
 
-        // Seed ABS unwrapping to the correct 360-branch if we have a saved angle (Auto -> TeleOp)
-        seedAbsUnwrapFromSavedAngle();
+// Seed ABS unwrapping from *current* sensor value (no cross-OpMode carry).
+        seedAbsUnwrap();
 
-        // Align motor ticks to ABS once at init
+// Align motor ticks to ABS once at init
         computeAngleOffsetFromAbs();
     }
 
@@ -195,6 +195,15 @@ public class TurretSubsystem {
         absUnwrapped0to360 = raw + 360.0 * k;
     }
 
+    // Start ABS unwrapping fresh from the current sensor reading.
+    private void seedAbsUnwrap() {
+        double raw = getAbsAngle0to360();
+        absInit = true;
+        lastAbs0to360 = raw;
+        absUnwrapped0to360 = raw;
+    }
+
+
     // =========================
     // Tick / angle helpers
     // =========================
@@ -213,11 +222,9 @@ public class TurretSubsystem {
         int ticks = turretMotor.getCurrentPosition();
         double tickAngle = ticks / TICKS_PER_TURRET_DEG;
         angleOffsetDeg = turretAngleDeg - tickAngle;
-
-        // also seed ABS unwrap to match this reference (so resync behaves)
-        PoseStorage.lastTurretAngleDeg = turretAngleDeg;
-        seedAbsUnwrapFromSavedAngle();
+        // No PoseStorage, no cross-OpMode side effects
     }
+
 
     /**
      * Wrap commanded angle into [MIN, MAX] using desired + 360*k equivalents,
@@ -323,7 +330,7 @@ public class TurretSubsystem {
     public boolean isTrackEnabled() { return trackEnabled; }
 
     private static final double VISION_DEADBAND_DEG = 0.15; // was 0.4
-    private static final double VISION_GAIN = 2.0;          // 1.0–1.6
+    private static final double VISION_GAIN = 3.0;          // 1.0–1.6
     private static final double VISION_MAX_STEP_DEG = 50.0; // cap per loop
 
     public void trackWithTxDeg(double txDeg) {
@@ -435,7 +442,7 @@ public class TurretSubsystem {
     // =========================
     public void update() {
         // Save a continuous angle for the next OpMode (Auto -> TeleOp)
-        PoseStorage.lastTurretAngleDeg = getCurrentAngleDeg();
+        //PoseStorage.lastTurretAngleDeg = getCurrentAngleDeg();
 
 //        // Only resync when basically stopped (prevents offset jumping mid-move)
 //        if (Math.abs(turretMotor.getVelocity()) < STOP_VELOCITY_TPS) {

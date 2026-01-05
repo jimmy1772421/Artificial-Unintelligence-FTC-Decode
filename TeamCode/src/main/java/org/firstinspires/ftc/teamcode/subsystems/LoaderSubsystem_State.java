@@ -9,7 +9,7 @@ public class LoaderSubsystem_State {
     private final Servo servoOne;
     private final ElapsedTime timer = new ElapsedTime();
 
-    private static final double SERVO_MIN = 0.32;
+    private static final double SERVO_MIN = 0.27;
     private static final double SERVO_MAX = 0.62;
 
     private static final double DEFAULT_POS = 0.0;

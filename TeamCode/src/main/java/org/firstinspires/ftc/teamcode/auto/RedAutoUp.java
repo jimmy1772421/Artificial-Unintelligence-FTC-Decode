@@ -61,11 +61,11 @@ public class RedAutoUp extends OpMode {
     // ============================
     private final Pose startPose   = new Pose(108.6, 133.12, Math.toRadians(90));
     private final Pose scorePose   = new Pose(80, 80, Math.toRadians(45));
-    private final Pose prePickup1Pose = new Pose(99, 83.5, Math.toRadians(0));
+    private final Pose prePickup1Pose = new Pose(92, 83.5, Math.toRadians(0));
     private final Pose pickup1Pose = new Pose(130, 83.5, Math.toRadians(0));
-    private final Pose prePickup2Pose = new Pose(99, 59, Math.toRadians(0));
+    private final Pose prePickup2Pose = new Pose(92, 59, Math.toRadians(0));
     private final Pose pickup2Pose = new Pose(130, 59, Math.toRadians(0));
-    private final Pose prePickup3Pose = new Pose(99, 35, Math.toRadians(0));
+    private final Pose prePickup3Pose = new Pose(92, 35, Math.toRadians(0));
     private final Pose pickup3Pose = new Pose(130, 35, Math.toRadians(0));
 
     private Path scorePreload;
@@ -74,7 +74,7 @@ public class RedAutoUp extends OpMode {
 
     //Power in path
     private static final double PWR_FAST  = 0.85;
-    private static final double PWR_CREEP = 0.35;
+    private static final double PWR_CREEP = 0.25;
 
 
     // ===== TURRET PRE-SHOOT HOLD =====
@@ -119,8 +119,11 @@ public class RedAutoUp extends OpMode {
     // Pattern-tag board location (Pedro coords)
     private static final double PATTERN_TAG_X = 72.0;
     private static final double PATTERN_TAG_Y = 160.0;
+    public static double TRACK_ENTRY_MAX_ERR_DEG = 20.0;  // only enable tracking if |tx| < this
 
+    private boolean turretZeroLatched = false;
 
+    private boolean ejectEverStarted = false;
 
     // ============================
     // ===== PATH BUILDING ========
@@ -194,14 +197,15 @@ public class RedAutoUp extends OpMode {
 
             case 90:
                 if (!follower.isBusy()) {
-                    // We are at score pose. Ensure turret phase is homing, then wait for 0.
                     turretPhase = TurretPhase.HOMING_TO_ZERO;
+                    turretZeroLatched = false;   // <--- add
                     setPathState(1);
                     break;
                 }
+                break;
 
             case 1:
-                if (Math.abs(turret.getCurrentAngleDeg()) < 3.0) {
+                if (turretZeroLatched && pathTimer.getElapsedTimeSeconds() > 2.0) {
                     startShootSequence();
                     setPathState(100);
                 }
@@ -329,38 +333,46 @@ public class RedAutoUp extends OpMode {
 
         switch (turretPhase) {
             case PREAIM_FIELD90:
-                // Instead of "face field 90°", actively face the pattern-tag board point.
-                // This maximizes your chance of seeing 21/22/23 while driving.
                 turret.faceTarget(PATTERN_TAG_X, PATTERN_TAG_Y, robotPose);
-
-                // As soon as we see ANY tag (pattern or goal) OR we reached the shoot pose,
-                // switch to homing turret to zero.
                 if (seenTag || reachedShootPose) {
                     turretPhase = TurretPhase.HOMING_TO_ZERO;
                 }
                 break;
 
-            case HOMING_TO_ZERO:
-                // Hard-home turret to 0 and keep it there
+            case HOMING_TO_ZERO: {
                 turret.goToAngle(0.0);
 
-                // Optional: once homed, allow tracking (only if a goal tag is actually visible)
-                if (turretAtZero() && ENABLE_TURRET_TRACKING && !Double.isNaN(vision.getGoalTxDegOrNaN())) {
+                // >>> ADD THIS <<<
+                if (!turretZeroLatched && turretAtZero()) {
+                    turretZeroLatched = true;
+                }
+                // <<<<<<<<<<<
+
+                double tx = vision.getGoalTxDegOrNaN();
+                boolean txValid = !Double.isNaN(tx);
+                boolean txCloseEnough = txValid && Math.abs(tx) <= TRACK_ENTRY_MAX_ERR_DEG;
+
+                if (ENABLE_TURRET_TRACKING && txCloseEnough) {
                     turretPhase = TurretPhase.TRACKING;
                 }
                 break;
+            }
 
-            case TRACKING:
-                // Track best goal tag (20/24) by tx
+            case TRACKING: {
                 double tx = vision.getGoalTxDegOrNaN();
 
-                if (Double.isNaN(tx) || Math.abs(tx) < TRACK_TX_DEADBAND) {
-                    // hold position
+                if (Double.isNaN(tx)) {
+                    turretPhase = TurretPhase.HOMING_TO_ZERO;
+                    break;
+                }
+
+                if (Math.abs(tx) < TRACK_TX_DEADBAND) {
                     turret.goToAngle(turret.getCurrentAngleDeg());
                 } else {
                     turret.goToAngle(turret.getCurrentAngleDeg() + TRACK_SIGN * tx);
                 }
                 break;
+            }
         }
     }
 
@@ -399,6 +411,7 @@ public class RedAutoUp extends OpMode {
         shooting = true;
         yEdgeSent = false;
         shootStartMs = System.currentTimeMillis();
+        ejectEverStarted = false;  // <---
     }
 
     private boolean updateShootSequence() {
@@ -469,13 +482,12 @@ public class RedAutoUp extends OpMode {
 
 
         // IMPORTANT: keep shooter ON during the entire eject sequence
-        shooter.update(true, false, false, fieldPos);
-
         spindexer.update(telemetry, loader, yEdge, autoPatternTag);
 
-        // Done when we have already triggered yEdge and spindexer finished ejecting
-        if (yEdgeSent && !spindexer.isEjecting()) {
-            shooter.update(false, false, false, fieldPos); // stop shooter cleanly
+        if (spindexer.isEjecting()) ejectEverStarted = true;
+
+// only allow "done" AFTER eject has started at least once
+        if (yEdgeSent && ejectEverStarted && !spindexer.isEjecting()) {
             shooting = false;
             return true;
         }
@@ -525,32 +537,77 @@ public class RedAutoUp extends OpMode {
         spindexer = new SpindexerSubsystem_State_new(hardwareMap);
         intake = new IntakeSubsystem_Motor(hardwareMap);
 
+        //spindexer.setCoast(true);
         follower.setStartingPose(startPose);
         follower.update();
-
         buildPaths();
+
+        //spindexer.homeToIntake();
 
         telemetry.addLine("ExampleAuto ready");
         telemetry.update();
+
+//        spindexer.presetSlots(
+//                SpindexerSubsystem_State_new.Ball.GREEN,
+//                SpindexerSubsystem_State_new.Ball.PURPLE,
+//                SpindexerSubsystem_State_new.Ball.PURPLE
+//        );
+
+
+
     }
 
     @Override
     public void init_loop() {
         // optional: show tags while waiting
         telemetry.addData("Seen Tags", vision.getSeenTagIdsString());
+        int slot = spindexer.dbgSlotAtIntakeIfWithin(60.0);
+        double absRaw = spindexer.dbgAbsRawDeg();
+        double absInt = spindexer.dbgAbsInternalDeg();
+        double err    = spindexer.dbgErrToNearestIntakeSlotDeg();
+
+        SpindexerSubsystem_State_new.Ball[] s = spindexer.getSlots();
+
+        telemetry.addData("IntakeIdx", spindexer.getIntakeSlotIndex());
+        telemetry.addData("Slot0", s[0]);
+        telemetry.addData("Slot1", s[1]);
+        telemetry.addData("Slot2", s[2]);
+        telemetry.addData("Full", spindexer.isFull());
+        telemetry.addData("AnyBall", spindexer.hasAnyBall());
+
+
+        telemetry.addData("Spindexer absRaw", "%.1f", absRaw);
+        telemetry.addData("Spindexer absInternal", "%.1f", absInt);
+        telemetry.addData("Nearest intake err(deg)", "%.1f", err);
+
+        if (slot >= 0) {
+            telemetry.addData("INTAKE SLOT", "%d (within ±60°)", slot);
+        } else {
+            telemetry.addData("INTAKE SLOT", "between slots");
+        }
         telemetry.update();
+
+        // keep loader null, yEdge false so it can NEVER start eject
+        //spindexer.update(telemetry, null, false, 0);
+        //spindexer.homeToIntake();
     }
 
     @Override
     public void start() {
         opmodeTimer.resetTimer();
+
         setPathState(0);
-        spindexer.homeToIntake();
+        spindexer.setCoast(false);
+        //spindexer.homeToIntake();
         turretPhase = TurretPhase.PREAIM_FIELD90;
+
     }
 
     @Override
     public void loop() {
+        // Keep shooter spinning the whole match
+        shooter.update(true, false, false, fieldPos);
+
         follower.update();
 
         //get shooting pattern
@@ -561,13 +618,18 @@ public class RedAutoUp extends OpMode {
 
         loader.updateLoader();
 
-// Keep spindexer state machine alive even when not shooting
+        // Keep spindexer state machine alive even when not shooting
         boolean yEdge = false;
-        spindexer.update(telemetry, loader, yEdge, autoPatternTag);
+        //spindexer.update(telemetry, loader, yEdge, autoPatternTag);
+        if (!shooting) {
+            spindexer.update(telemetry, loader, false, autoPatternTag);
+        }
+        autonomousPathUpdate();
+
         intake.startIntake();   // ALWAYS ON
 
         drawRobotOnPanels(follower.getPose());
-        autonomousPathUpdate();
+        //autonomousPathUpdate();
         PoseStorage.lastPose = follower.getPose();
         PoseStorage.lastTurretAngleDeg = turret.getCurrentAngleDeg();
 
@@ -576,6 +638,20 @@ public class RedAutoUp extends OpMode {
         telemetry.addData("Seen Tags", vision.getSeenTagIdsString());
         telemetry.addData("tx(tag " + TRACK_TAG_ID + ")", "%.2f", vision.getTagTxDegOrNaN(TRACK_TAG_ID));
         telemetry.addData("AutoPatternTag", autoPatternTag);
+        SpindexerSubsystem_State_new.Ball[] s = spindexer.getSlots();
+
+        telemetry.addData("IntakeIdx", spindexer.getIntakeSlotIndex());
+        telemetry.addData("Slot0", s[0]);
+        telemetry.addData("Slot1", s[1]);
+        telemetry.addData("Slot2", s[2]);
+        telemetry.addData("Full", spindexer.isFull());
+        telemetry.addData("AnyBall", spindexer.hasAnyBall());
+        telemetry.addData("Shooting", shooting);
+        telemetry.addData("yEdgeSent", yEdgeSent);
+        telemetry.addData("Spd ejecting", spindexer.isEjecting());
+        telemetry.addData("Spd curAng", "%.1f", spindexer.getCurrentAngleDeg());
+        telemetry.addData("Spd tgtAng", "%.1f", spindexer.getTargetAngleDeg());
+
         telemetry.update();
     }
 

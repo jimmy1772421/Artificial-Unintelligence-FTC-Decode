@@ -21,8 +21,8 @@ public class ShooterSubsystemPIDF {
     // Adjust in practice:
     //  0.85 -> ~35 degrees (near)
     //  0.92 -> ~60 degrees (far-ish)
-    private static final double HOOD_NEAR_POS = 0.85;
-    private static final double HOOD_FAR_POS  = 0.92;
+    private static final double HOOD_NEAR_POS = 0.92;
+    private static final double HOOD_FAR_POS  = 0.85;
 
     // ===== HELPERS =====
     private static double ticksPerSecToRpm(double tps) {
@@ -42,8 +42,8 @@ public class ShooterSubsystemPIDF {
     private boolean isOn = false;   // shooter commanded on/off
     private int fieldPos = 0;       // 0 = nearfield, 1 = far
 
-    private double nearRpm = 2700.0;   // tune these on field
-    private double farRpm  = 3300.0;
+    private double nearRpm = 3050.0;   // tune these on field
+    private double farRpm  = 3700.0;
 
     // edge-detection for RPM buttons
     private boolean prevRpmUp   = false;

@@ -43,7 +43,7 @@ public class TurretSubsystem {
 
     // Abs encoder calibration:
     // raw abs angle (0..360) when turret is at "0°" (centered / your chosen zero)
-    private static final double ZERO_ABS_DEG = 62.2;   // calibrate
+    private static final double ZERO_ABS_DEG = 233.0;   // calibrate
 
     public static double OFFSET_TRIM_DEG = 0.0;
     // Flip if abs increases opposite your positive turret direction

@@ -15,7 +15,7 @@ public class LoaderSubsystem_State {
     private static final double DEFAULT_POS = 0.0;
     private static final double UP_POS      = 1.0;
 
-    private static final double UP_TIME_SEC = 0.10;
+    private static final double UP_TIME_SEC = 0.2;
 
     private enum State { IDLE, UP_HOLD }
     private State state = State.IDLE;

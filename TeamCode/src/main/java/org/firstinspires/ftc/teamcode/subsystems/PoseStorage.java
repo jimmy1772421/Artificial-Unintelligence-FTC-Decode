@@ -8,6 +8,10 @@ public final class PoseStorage {
 
     // Continuous turret heading in your turret frame (e.g. -200..+200-ish, can be continuous)
     public static Double lastTurretAngleDeg = null;
+    public static Integer lastSpindexerZeroTicks = null;
+    public static Integer lastSpindexerIntakeIndex = null;
+    public static Double  lastSpindexerTargetAngleDeg = null;
+
 
     private PoseStorage() {}
 }

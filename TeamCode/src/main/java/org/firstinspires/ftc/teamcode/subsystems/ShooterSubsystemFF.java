@@ -46,11 +46,11 @@ public class ShooterSubsystemFF {
     //  - kV is power per (ticks/sec)  (~ 1/MAX_TICKS_PER_SEC as a starting point)
     //  - kS is static power offset (sign-applied)
     //  - P/I are “power per ticks/sec error”
-    private double kP = 0.00010;
+    private double kP = 0.00000;
     private double kI = 0.0;
     private double kD = 0.0;
-    private double kV = 1.0 / MAX_TICKS_PER_SEC; // good first guess
-    private double kS = 0.02;                    // typical small-ish start
+    private double kV = 0.0; // good first guess
+    private double kS = 0.00;                    // typical small-ish start
 
     // debug
     private double lastTargetTps = 0.0;
@@ -129,7 +129,7 @@ public class ShooterSubsystemFF {
         }
 
         // Feedforward: kV*target + kS*sign(target)
-        double ff = kV * targetTps + kS * Math.signum(targetTps);
+        double ff = kV * targetRpm + kS * Math.signum(targetTps);
         lastFF = ff;
 
         // Push params into controller each loop (so tuning updates instantly)

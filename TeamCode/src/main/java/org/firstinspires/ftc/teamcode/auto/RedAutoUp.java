@@ -1,9 +1,13 @@
 package org.firstinspires.ftc.teamcode.auto;
 
+import com.bylazar.configurables.annotations.Configurable;
+import com.bylazar.field.FieldManager;
+import com.bylazar.field.PanelsField;
 import com.pedropathing.follower.Follower;
 import com.pedropathing.geometry.BezierLine;
 import com.pedropathing.geometry.Pose;
 import com.pedropathing.math.Vector;
+import com.pedropathing.paths.HeadingInterpolator;
 import com.pedropathing.paths.Path;
 import com.pedropathing.paths.PathChain;
 import com.pedropathing.util.Timer;
@@ -14,32 +18,124 @@ import com.qualcomm.robotcore.util.Range;
 import org.firstinspires.ftc.teamcode.pedroPathing.Constants;
 import org.firstinspires.ftc.teamcode.subsystems.IntakeSubsystem_Motor;
 import org.firstinspires.ftc.teamcode.subsystems.LoaderSubsystem;
-import org.firstinspires.ftc.teamcode.subsystems.ShooterSubsystemPIDF;
-import org.firstinspires.ftc.teamcode.subsystems.SpindexerSubsystem_State_new;
-import org.firstinspires.ftc.teamcode.subsystems.TurretSubsystem;
-import org.firstinspires.ftc.teamcode.subsystems.VisionSubsystem;
 import org.firstinspires.ftc.teamcode.subsystems.PoseStorage;
+import org.firstinspires.ftc.teamcode.subsystems.ShooterSubsystemFF;
+import org.firstinspires.ftc.teamcode.subsystems.SpindexerSubsystem_State_new_Incremental;
+import org.firstinspires.ftc.teamcode.subsystems.TurretSubsystemIncremental;
+import org.firstinspires.ftc.teamcode.subsystems.VisionSubsystem;
 
-import com.bylazar.field.FieldManager;
-import com.bylazar.field.PanelsField;
 
-@Autonomous(name = "RedAutoUp", group = "Examples")
+@Configurable
+@Autonomous(name = "RedAutoUp_Incremental", group = "Auto")
 public class RedAutoUp extends OpMode {
 
-    // ============================
-    // ===== TURRET TRACKING ======
-    // ============================
-    public static boolean ENABLE_TURRET_TRACKING = true;
+    // =========================
+    // ===== POSES / PATHS =====
+    // =========================
+    private final Pose startPose   = new Pose(108, 133.32, Math.toRadians(90));
+    private final Pose scorePose   = new Pose(88, 88, Math.toRadians(45));
 
+    private final Pose prePickup1Pose = new Pose(92, 83.5, Math.toRadians(0));
+    private final Pose pickup1Pose    = new Pose(130, 83.5, Math.toRadians(0));
+
+    private final Pose prePickup2Pose = new Pose(92, 59, Math.toRadians(0));
+    private final Pose pickup2Pose    = new Pose(130, 59, Math.toRadians(0));
+
+    private final Pose prePickup3Pose = new Pose(92, 35, Math.toRadians(0));
+    private final Pose pickup3Pose    = new Pose(130, 35, Math.toRadians(0));
+
+    private Path scorePreload;
+    private PathChain goPrePickup1, creepToPickup1, scorePickup1;
+    private PathChain goPrePickup2, creepToPickup2, scorePickup2;
+    private PathChain goPrePickup3, creepToPickup3, scorePickup3;
+
+    // Power in path
+    public static double PWR_FAST  = 0.85;
+    public static double PWR_CREEP = 0.35;
+
+    // =========================
+    // ===== TURRET / AIM ======
+    // =========================
+
+    // PREAIM is ONLY for reading pattern tag (21/22/23)
+    public static double PATTERN_TAG_X = 72.0;
+    public static double PATTERN_TAG_Y = 160.0;
+
+    // If vision tracking is disabled, face this point (should be same as goal)
+    public static double ODO_FACE_X = 136.0;
+    public static double ODO_FACE_Y = 128.0;
+
+    // Vision-based turret tracking toggle
+    public static boolean VISION_TURRET_TRACKING_ENABLED = false; //if false, odo tracking
+
+    // Which tag ID to track for aiming (goal tag)
     public static int TRACK_TAG_ID = 24;
-    public static double TRACK_KP = 0.02;           // power per deg of tx
-    public static double TRACK_MAX_POWER = 0.25;    // clamp
-    public static double TRACK_TX_DEADBAND = 0.4;   // deg
-    public static double TRACK_SIGN = 1.0;          // set to -1.0 if turret turns the wrong way
 
-    // ============================
-    // ===== PEDRO / PANELS =======
-    // ============================
+    // TeleOp-like tracking behavior
+    public static double TRACK_TX_DEADBAND_DEG = 0.4;   // tx deadband
+    public static double TRACK_MAX_STEP_DEG    = 2.0;   // max step per loop
+    public static double TRACK_SIGN            = 1.0;   // flip if wrong direction
+
+    // If tag disappears during tracking, "spin back" to zero after timeout
+    public static boolean RETURN_TO_ZERO_ON_TAG_LOST = true;
+    public static long TAG_LOST_TIMEOUT_MS = 250;
+
+    // Aim-ready thresholds (used to decide when to fire)
+    public static double AIM_TX_READY_DEG   = 0.7;  // when |tx| < this, consider aimed
+    public static double AIM_ANGLE_TOL_DEG  = 3.0;  // when |target-current| < this in ODO mode
+
+    // turret zero tolerance
+    public static double TURRET_ZERO_TOL_DEG = 3.0;
+
+    // how close to scorePose counts as "arrived"
+    public static double SCOREPOSE_POS_TOL_IN = 2.0;
+    public static double SCOREPOSE_HEAD_TOL_DEG = 4.0;
+
+    public static double PREAIM_MAX_SEC = 1.2; // safety so preaim never deadlocks
+
+    private enum TurretPhase {
+        PREAIM_PATTERN,
+        HOMING_TO_ZERO,
+        VISION_TRACKING,
+        ODO_FACE_POINT
+    }
+    private TurretPhase turretPhase = TurretPhase.PREAIM_PATTERN;
+
+    private boolean turretZeroLatched = false;
+    private long lastAimTagSeenMs = 0;
+
+    // --- Fail-safes so first shot can’t deadlock ---
+    public static long TURRET_HOME_TIMEOUT_MS = 900;  // if turret doesn't hit 0 by this, force-latch
+    public static long MAX_AIM_WAIT_MS        = 1400; // if aim never "ready", force-fire after this
+
+    private long turretHomeStartMs = 0;
+
+
+    // =========================
+    // ===== SHOOT SEQUENCE =====
+    // =========================
+    private boolean shooting = false;
+    private boolean yEdgeSent = false;
+    private long shootStartMs = 0;
+
+    public static long MIN_SPINUP_MS = 600;       // tune
+    public static double READY_ERR_RPM = 200;     // tune
+
+    private boolean ejectEverStarted = false;
+
+    // pattern tag latched from vision (21/22/23) once per match
+    private int autoPatternTag = 0; // 0 = no pattern
+    private int fieldPos = 0;       // 0 near, 1 far (if your shooter uses this)
+    public static long SHOOT_SEQUENCE_TIMEOUT_MS = 9000; // big enough, prevents deadlock
+    public static int MAX_REEJECT_ATTEMPTS = 2;
+
+    private long shootDeadlineMs = 0;
+    private int reEjectAttempts = 0;
+
+
+    // =========================
+    // ===== PEDRO / PANELS =====
+    // =========================
     private Follower follower;
     private Timer pathTimer, opmodeTimer;
     private int pathState;
@@ -47,88 +143,20 @@ public class RedAutoUp extends OpMode {
     private FieldManager panelsField;
     private static final double ROBOT_RADIUS = 9;
 
-    // ============================
-    // ===== SUBSYSTEMS ===========
-    // ============================
-    private TurretSubsystem turret;
+    // =========================
+    // ===== SUBSYSTEMS =========
+    // =========================
+    private TurretSubsystemIncremental turret;
     private VisionSubsystem vision;
-    private ShooterSubsystemPIDF shooter;
+    private ShooterSubsystemFF shooter;
     private LoaderSubsystem loader;
-    private SpindexerSubsystem_State_new spindexer;
+    private SpindexerSubsystem_State_new_Incremental spindexer;
     private IntakeSubsystem_Motor intake;
-    // ============================
-    // ===== POSES / PATHS ========
-    // ============================
-    private final Pose startPose   = new Pose(108.6, 133.12, Math.toRadians(90));
-    private final Pose scorePose   = new Pose(80, 80, Math.toRadians(45));
-    private final Pose prePickup1Pose = new Pose(92, 83.5, Math.toRadians(0));
-    private final Pose pickup1Pose = new Pose(130, 83.5, Math.toRadians(0));
-    private final Pose prePickup2Pose = new Pose(92, 59, Math.toRadians(0));
-    private final Pose pickup2Pose = new Pose(130, 59, Math.toRadians(0));
-    private final Pose prePickup3Pose = new Pose(92, 35, Math.toRadians(0));
-    private final Pose pickup3Pose = new Pose(130, 35, Math.toRadians(0));
 
-    private Path scorePreload;
-    private PathChain goPrePickup1, creepToPickup1, scorePickup1, goPrePickup2, creepToPickup2,
-            scorePickup2, goPrePickup3, creepToPickup3, scorePickup3;
-
-    //Power in path
-    private static final double PWR_FAST  = 0.85;
-    private static final double PWR_CREEP = 0.25;
-
-
-    // ===== TURRET PRE-SHOOT HOLD =====
-    public static boolean HOLD_TURRET_90_UNTIL_SCOREPOSE = true;
-
-    // If true: turret faces a FIELD heading (deg). If false: turret just goes to +90 deg turret angle.
-    public static boolean HOLD_FIELD_CENTRIC = true;
-
-    // the field direction you want the turret to face before first shot
-    public static double HOLD_FIELD_DEG = 90.0;
-
-    // if not field-centric, turret angle to hold
-    public static double HOLD_TURRET_DEG = 90.0;
-
-    // how close to scorePose counts as "arrived"
-    public static double SCOREPOSE_POS_TOL_IN = 2.0;
-    public static double SCOREPOSE_HEAD_TOL_DEG = 8.0;
-
-    private int shootState = 0;
-    private final Timer shootTimer = new Timer();
-    private boolean shooting = false;
-
-
-
-    // Auto shoot sequence state
-    //private boolean shooting = false;
-    private boolean yEdgeSent = false;
-    private long shootStartMs = 0;
-
-    private static final long MIN_SPINUP_MS = 600; // tune
-    private static final double READY_ERR_RPM = 200; // matches your shooter light logic
-
-    private int autoPatternTag = 0; // 0 = no pattern
-    private int fieldPos = 0;
-
-    private enum TurretPhase { PREAIM_FIELD90, HOMING_TO_ZERO, TRACKING }
-    private TurretPhase turretPhase = TurretPhase.PREAIM_FIELD90;
-
-    private static final double TURRET_ZERO_TOL_DEG = 3.0;
-    public static double START_FIELD_HEADING_DEG = 90.0;
-
-    // Pattern-tag board location (Pedro coords)
-    private static final double PATTERN_TAG_X = 72.0;
-    private static final double PATTERN_TAG_Y = 160.0;
-    public static double TRACK_ENTRY_MAX_ERR_DEG = 20.0;  // only enable tracking if |tx| < this
-
-    private boolean turretZeroLatched = false;
-
-    private boolean ejectEverStarted = false;
-
-    // ============================
-    // ===== PATH BUILDING ========
-    // ============================
-    public void buildPaths() {
+    // =========================
+    // ===== PATH BUILDING ======
+    // =========================
+    private void buildPaths() {
         scorePreload = new Path(new BezierLine(startPose, scorePose));
         scorePreload.setLinearHeadingInterpolation(startPose.getHeading(), scorePose.getHeading());
 
@@ -141,7 +169,6 @@ public class RedAutoUp extends OpMode {
                 .addPath(new Path(new BezierLine(prePickup1Pose, pickup1Pose)))
                 .setLinearHeadingInterpolation(prePickup1Pose.getHeading(), pickup1Pose.getHeading())
                 .build();
-
 
         scorePickup1 = follower.pathBuilder()
                 .addPath(new Path(new BezierLine(pickup1Pose, scorePose)))
@@ -158,7 +185,6 @@ public class RedAutoUp extends OpMode {
                 .setLinearHeadingInterpolation(prePickup2Pose.getHeading(), pickup2Pose.getHeading())
                 .build();
 
-
         scorePickup2 = follower.pathBuilder()
                 .addPath(new Path(new BezierLine(pickup2Pose, scorePose)))
                 .setLinearHeadingInterpolation(pickup2Pose.getHeading(), scorePose.getHeading())
@@ -174,17 +200,16 @@ public class RedAutoUp extends OpMode {
                 .setLinearHeadingInterpolation(prePickup3Pose.getHeading(), pickup3Pose.getHeading())
                 .build();
 
-
         scorePickup3 = follower.pathBuilder()
                 .addPath(new Path(new BezierLine(pickup3Pose, scorePose)))
                 .setLinearHeadingInterpolation(pickup3Pose.getHeading(), scorePose.getHeading())
                 .build();
     }
 
-    // ============================
-    // ===== STATE MACHINE ========
-    // ============================
-    public void autonomousPathUpdate() {
+    // =========================
+    // ===== PATH STATE MACHINE ==
+    // =========================
+    private void autonomousPathUpdate() {
         switch (pathState) {
 
             // =====================
@@ -192,21 +217,12 @@ public class RedAutoUp extends OpMode {
             // =====================
             case 0:
                 follower.followPath(scorePreload);
-                setPathState(90);
+                setPathState(10);
                 break;
 
-            case 90:
+            case 10:
                 if (!follower.isBusy()) {
-                    turretPhase = TurretPhase.HOMING_TO_ZERO;
-                    turretZeroLatched = false;   // <--- add
-                    setPathState(1);
-                    break;
-                }
-                break;
-
-            case 1:
-                if (turretZeroLatched && pathTimer.getElapsedTimeSeconds() > 2.0) {
-                    startShootSequence();
+                    startShootSequence();   // will home turret + aim logic internally
                     setPathState(100);
                 }
                 break;
@@ -230,7 +246,7 @@ public class RedAutoUp extends OpMode {
 
             case 12:
                 if (!follower.isBusy()) {
-                    follower.followPath(scorePickup1, true); // go score
+                    follower.followPath(scorePickup1, true);
                     setPathState(13);
                 }
                 break;
@@ -254,14 +270,14 @@ public class RedAutoUp extends OpMode {
             // =====================
             case 21:
                 if (!follower.isBusy()) {
-                    follower.followPath(creepToPickup2, PWR_CREEP, true); // hold at pickup
+                    follower.followPath(creepToPickup2, PWR_CREEP, true);
                     setPathState(22);
                 }
                 break;
 
             case 22:
                 if (!follower.isBusy()) {
-                    follower.followPath(scorePickup2, true); // go score
+                    follower.followPath(scorePickup2, true);
                     setPathState(23);
                 }
                 break;
@@ -285,14 +301,14 @@ public class RedAutoUp extends OpMode {
             // =====================
             case 31:
                 if (!follower.isBusy()) {
-                    follower.followPath(creepToPickup3, PWR_CREEP, true); // hold at pickup
+                    follower.followPath(creepToPickup3, PWR_CREEP, true);
                     setPathState(32);
                 }
                 break;
 
             case 32:
                 if (!follower.isBusy()) {
-                    follower.followPath(scorePickup3, true); // go score
+                    follower.followPath(scorePickup3, true);
                     setPathState(33);
                 }
                 break;
@@ -306,84 +322,397 @@ public class RedAutoUp extends OpMode {
 
             case 103:
                 if (updateShootSequence(fieldPos, autoPatternTag)) {
-                    setPathState(-1); // done
+                    setPathState(-1);
                 }
                 break;
 
             case -1:
             default:
-                // done / do nothing
+                // done
                 break;
         }
     }
 
-    public void setPathState(int pState) {
+    private void setPathState(int pState) {
         pathState = pState;
         pathTimer.resetTimer();
     }
 
-    // ============================
-    // ===== TURRET TRACKING ======
-    // ============================
+    // =========================
+    // ===== PATTERN TAG LATCH ==
+    // =========================
+    private void updateAutoPatternTag() {
+        if (autoPatternTag != 0) return;
+        int t = vision.getPatternTag(); // 21/22/23 or 0
+        if (t == 21 || t == 22 || t == 23) autoPatternTag = t;
+    }
+
+    // =========================
+    // ===== TURRET CONTROL =====
+    // =========================
     private void updateTurretControl() {
         Pose robotPose = follower.getPose();
+        long now = System.currentTimeMillis();
 
         boolean reachedShootPose = atPose(robotPose, scorePose, SCOREPOSE_POS_TOL_IN, SCOREPOSE_HEAD_TOL_DEG);
-        boolean seenTag = tagSeen();
+
+        // Pattern tags 21/22/23
+        int ptag = vision.getPatternTag();
+        boolean patternSeen = (ptag == 21 || ptag == 22 || ptag == 23);
+
+        // Aim tag tx (goal aiming)
+        double tx = vision.getTagTxDegOrNaN(TRACK_TAG_ID);
+        boolean txValid = !Double.isNaN(tx);
+        if (txValid) lastAimTagSeenMs = now;
 
         switch (turretPhase) {
-            case PREAIM_FIELD90:
+
+            case PREAIM_PATTERN: {
+                // Only purpose: face pattern-board so we can read 21/22/23
                 turret.faceTarget(PATTERN_TAG_X, PATTERN_TAG_Y, robotPose);
-                if (seenTag || reachedShootPose) {
+
+                // Do NOT deadlock in preaim
+                boolean preaimTimedOut = pathTimer.getElapsedTimeSeconds() > PREAIM_MAX_SEC;
+
+                // Once we are near score pose OR we have the pattern OR timeout, go home turret
+                if (reachedShootPose || patternSeen || autoPatternTag != 0 || preaimTimedOut) {
                     turretPhase = TurretPhase.HOMING_TO_ZERO;
-                }
-                break;
-
-            case HOMING_TO_ZERO: {
-                turret.goToAngle(0.0);
-
-                // >>> ADD THIS <<<
-                if (!turretZeroLatched && turretAtZero()) {
-                    turretZeroLatched = true;
-                }
-                // <<<<<<<<<<<
-
-                double tx = vision.getGoalTxDegOrNaN();
-                boolean txValid = !Double.isNaN(tx);
-                boolean txCloseEnough = txValid && Math.abs(tx) <= TRACK_ENTRY_MAX_ERR_DEG;
-
-                if (ENABLE_TURRET_TRACKING && txCloseEnough) {
-                    turretPhase = TurretPhase.TRACKING;
+                    turretZeroLatched = false;
                 }
                 break;
             }
 
-            case TRACKING: {
-                double tx = vision.getGoalTxDegOrNaN();
+            case HOMING_TO_ZERO: {
+                turret.goToAngle(0.0);
 
-                if (Double.isNaN(tx)) {
-                    turretPhase = TurretPhase.HOMING_TO_ZERO;
+                if (!turretZeroLatched && turretAtZero()) {
+                    turretZeroLatched = true;
+                    turretPhase = VISION_TURRET_TRACKING_ENABLED
+                            ? TurretPhase.VISION_TRACKING
+                            : TurretPhase.ODO_FACE_POINT;
+                }
+                break;
+            }
+
+
+            case VISION_TRACKING: {
+                if (!VISION_TURRET_TRACKING_ENABLED) {
+                    turretPhase = TurretPhase.ODO_FACE_POINT;
                     break;
                 }
 
-                if (Math.abs(tx) < TRACK_TX_DEADBAND) {
+                // Tag lost => spin back to zero after timeout
+                if (!txValid) {
+                    if (RETURN_TO_ZERO_ON_TAG_LOST && (now - lastAimTagSeenMs) > TAG_LOST_TIMEOUT_MS) {
+                        turretPhase = TurretPhase.HOMING_TO_ZERO;
+                        turretZeroLatched = false;
+                        turret.goToAngle(0.0);
+                    } else {
+                        turret.goToAngle(turret.getCurrentAngleDeg()); // brief hold
+                    }
+                    break;
+                }
+
+                // TeleOp-like: deadband + step clamp
+                if (Math.abs(tx) < TRACK_TX_DEADBAND_DEG) {
                     turret.goToAngle(turret.getCurrentAngleDeg());
                 } else {
-                    turret.goToAngle(turret.getCurrentAngleDeg() + TRACK_SIGN * tx);
+                    double step = Range.clip(TRACK_SIGN * tx, -TRACK_MAX_STEP_DEG, TRACK_MAX_STEP_DEG);
+                    turret.goToAngle(turret.getCurrentAngleDeg() + step);
                 }
+                break;
+            }
+
+            case ODO_FACE_POINT: {
+                // Vision disabled => face the goal using odometry
+                turret.faceTarget(ODO_FACE_X, ODO_FACE_Y, robotPose);
                 break;
             }
         }
     }
 
-
-
-    private static double wrapDeg(double a) {
-        while (a >= 180) a -= 360;
-        while (a < -180) a += 360;
-        return a;
+    private boolean turretAtZero() {
+        return Math.abs(turret.getCurrentAngleDeg()) <= TURRET_ZERO_TOL_DEG;
     }
 
+    private boolean turretAtTarget(double tolDeg) {
+        return Math.abs(turret.getTargetAngleDeg() - turret.getCurrentAngleDeg()) <= tolDeg;
+    }
+
+    // =========================
+    // ===== SHOOT SEQUENCE =====
+    // =========================
+    private void startShootSequence() {
+        shooting = true;
+        yEdgeSent = false;
+        shootStartMs = System.currentTimeMillis();
+        ejectEverStarted = false;
+
+        // Every time we shoot: force turret to home to 0 first, then aim (vision or ODO)
+        turretPhase = TurretPhase.HOMING_TO_ZERO;
+        turretZeroLatched = false;
+
+        // start failsafe timers
+        turretHomeStartMs = shootStartMs;
+        shootDeadlineMs = shootStartMs + SHOOT_SEQUENCE_TIMEOUT_MS;
+        reEjectAttempts = 0;
+
+    }
+
+
+    private boolean shooterAtSpeed() {
+        double target = shooter.getTargetRpm();
+        double cur = shooter.getCurrentRpmEstimate();
+        return Math.abs(target - cur) < READY_ERR_RPM;
+    }
+
+    /**
+     * @param fieldPos 0 near, 1 far
+     * @param tagOverride 0/21/22/23 (pattern selection)
+     * @return true when shooting is complete
+     */
+    private boolean updateShootSequence(int fieldPos, int tagOverride) {
+        if (!shooting) return true;
+
+        long now = System.currentTimeMillis();
+        if (now > shootDeadlineMs) {
+            shooting = false;     // fail-safe: don't deadlock auto forever
+            return true;
+        }
+
+        // keep loader updated
+        loader.updateLoader();
+
+        // keep aiming updated
+        updateTurretControl();
+        turret.update();
+
+        // Decide if we are "aim ready"
+        boolean aimReady;
+        if (VISION_TURRET_TRACKING_ENABLED) {
+            // only fire once turret is homed AND tx is reasonably small
+            double tx = vision.getTagTxDegOrNaN(TRACK_TAG_ID);
+            boolean txValid = !Double.isNaN(tx);
+            aimReady = turretZeroLatched && (!txValid || Math.abs(tx) <= AIM_TX_READY_DEG);
+            // (If you want to REQUIRE tag for aimReady, change to: txValid && Math.abs(tx) <= AIM_TX_READY_DEG)
+        } else {
+            // ODO fallback: fire once turret is close to its current commanded target
+            aimReady = turretAtTarget(AIM_ANGLE_TOL_DEG);
+        }
+
+        // Spinup gate + aim gate
+        boolean forceAimTimeout = (now - shootStartMs) > MAX_AIM_WAIT_MS;
+        boolean allowFire = (shooterAtSpeed() || (now - shootStartMs) > MIN_SPINUP_MS)
+                && (aimReady || forceAimTimeout);
+
+        boolean yEdge = false;
+        if (allowFire && !yEdgeSent) {
+            yEdge = true;   // EXACTLY one loop
+            yEdgeSent = true;
+        }
+
+        // Keep shooter ON during whole eject
+        // (Main loop calls shooter.update(true,...), but safe to leave here too if you want)
+
+        // Run spindexer eject logic
+        spindexer.update(telemetry, loader, yEdge, tagOverride);
+
+        if (spindexer.isEjecting()) ejectEverStarted = true;
+
+        // done when eject has started and then ended
+        // If eject ended but balls remain (per software), poke eject again
+        if (yEdgeSent && ejectEverStarted && !spindexer.isEjecting()) {
+
+            if (spindexer.hasAnyBall() && reEjectAttempts < MAX_REEJECT_ATTEMPTS) {
+                reEjectAttempts++;
+
+                // re-arm the one-shot yEdge (keep shooter spinning, keep aiming)
+                yEdgeSent = false;
+                ejectEverStarted = false;
+                shootStartMs = now;            // restart spinup/aim window if you want
+                shootDeadlineMs = now + SHOOT_SEQUENCE_TIMEOUT_MS;
+
+                return false; // keep "shooting" state
+            }
+
+            // Only truly done when empty (or we've tried enough)
+            if (!spindexer.hasAnyBall()) {
+                shooting = false;
+                return true;
+            } else {
+                // still not empty but we hit retry limit: let auto continue (prevents hard lock)
+                shooting = false;
+                return true;
+            }
+        }
+
+
+        return false;
+    }
+
+    // =========================
+    // ===== OPMODE LIFECYCLE ===
+    // =========================
+    @Override
+    public void init() {
+        pathTimer = new Timer();
+        opmodeTimer = new Timer();
+        opmodeTimer.resetTimer();
+
+        follower = Constants.createFollower(hardwareMap);
+
+        panelsField = PanelsField.INSTANCE.getField();
+        panelsField.setOffsets(PanelsField.INSTANCE.getPresets().getPEDRO_PATHING());
+
+        turret    = new TurretSubsystemIncremental(hardwareMap);
+        vision    = new VisionSubsystem(hardwareMap);
+        shooter   = new ShooterSubsystemFF(hardwareMap);
+        loader    = new LoaderSubsystem(hardwareMap);
+        spindexer = new SpindexerSubsystem_State_new_Incremental(hardwareMap);
+        intake    = new IntakeSubsystem_Motor(hardwareMap);
+
+        follower.setStartingPose(startPose);
+        follower.update();
+        buildPaths();
+
+        // You manually rotate so slot0 is at LOAD when you press start:
+        spindexer.homeSlot0AtLoadHere();
+        // Preload preset so first shoot sequence actually has balls to eject
+        spindexer.presetSlots(
+                SpindexerSubsystem_State_new_Incremental.Ball.PURPLE,
+                SpindexerSubsystem_State_new_Incremental.Ball.PURPLE,
+                SpindexerSubsystem_State_new_Incremental.Ball.PURPLE
+        );
+
+
+        telemetry.addLine("RedAutoUp_Incremental ready");
+        telemetry.update();
+    }
+
+    @Override
+    public void init_loop() {
+        // show tags while waiting
+        telemetry.addData("Seen Tags", vision.getSeenTagIdsString());
+        telemetry.addData("PatternTag", vision.getPatternTag());
+        telemetry.addData("Aim tx(tag " + TRACK_TAG_ID + ")", "%.2f", vision.getTagTxDegOrNaN(TRACK_TAG_ID));
+
+        telemetry.addData("Spd angle", "%.1f", spindexer.getCurrentAngleDeg());
+        telemetry.addData("Spd target", "%.1f", spindexer.getTargetAngleDeg());
+        telemetry.addData("Spd intakeIdx", spindexer.getIntakeSlotIndex());
+        telemetry.addData("Spd full", spindexer.isFull());
+        telemetry.addData("Spd anyBall", spindexer.hasAnyBall());
+        telemetry.addData("Spd ejecting", spindexer.isEjecting());
+        telemetry.update();
+    }
+
+    @Override
+    public void start() {
+        opmodeTimer.resetTimer();
+        setPathState(0);
+
+        // Start in pattern preaim
+        turretPhase = TurretPhase.PREAIM_PATTERN;
+        turretZeroLatched = false;
+
+        // Start spindexer holding where it is (constructor does that)
+    }
+
+    @Override
+    public void loop() {
+        // Keep shooter spinning the whole match (simple + reliable in auto)
+        shooter.update(true, false, false, fieldPos);
+
+        follower.update();
+
+        // latch pattern tag (21/22/23) once
+        updateAutoPatternTag();
+
+        // turret control always running
+        updateTurretControl();
+        turret.update();
+
+        // keep loader alive
+        loader.updateLoader();
+
+        // keep spindexer alive even when not shooting
+        if (!shooting) {
+            spindexer.update(telemetry, loader, false, autoPatternTag);
+        }
+
+        // run path state machine
+        autonomousPathUpdate();
+
+        // intake always on (matches your TeleOp right now)
+        intake.startIntake();
+
+        drawRobotOnPanels(follower.getPose());
+
+        // record pose for TeleOp continuity
+        PoseStorage.lastPose = follower.getPose();
+        PoseStorage.lastTurretAngleDeg = turret.getCurrentAngleDeg();
+
+        // telemetry
+        telemetry.addData("pathState", pathState);
+        telemetry.addData("pose", follower.getPose());
+        telemetry.addData("Seen Tags", vision.getSeenTagIdsString());
+        telemetry.addData("AutoPatternTag", autoPatternTag);
+        telemetry.addData("TurretPhase", turretPhase);
+        telemetry.addData("TurretAngle", "%.1f", turret.getCurrentAngleDeg());
+        telemetry.addData("TurretTarget", "%.1f", turret.getTargetAngleDeg());
+
+        telemetry.addData("Shooting", shooting);
+        telemetry.addData("yEdgeSent", yEdgeSent);
+        telemetry.addData("Spd ejecting", spindexer.isEjecting());
+        telemetry.addData("Spd curAng", "%.1f", spindexer.getCurrentAngleDeg());
+        telemetry.addData("Spd tgtAng", "%.1f", spindexer.getTargetAngleDeg());
+
+        double txDbg = vision.getTagTxDegOrNaN(TRACK_TAG_ID);
+
+        telemetry.addData("DBG/shooting", shooting);
+        telemetry.addData("DBG/yEdgeSent", yEdgeSent);
+        telemetry.addData("DBG/turretPhase", turretPhase);
+        telemetry.addData("DBG/turretZeroLatched", turretZeroLatched);
+        telemetry.addData("DBG/turretAngle", "%.1f", turret.getCurrentAngleDeg());
+        telemetry.addData("DBG/txValid", !Double.isNaN(txDbg));
+        telemetry.addData("DBG/tx", "%.2f", txDbg);
+        telemetry.addData("DBG/shotAgeMs", (System.currentTimeMillis() - shootStartMs));
+
+        telemetry.update();
+    }
+
+    @Override
+    public void stop() {
+        PoseStorage.lastPose = follower.getPose();
+        PoseStorage.lastTurretAngleDeg = turret.getCurrentAngleDeg();
+
+        if (turret != null) turret.goToAngle(turret.getCurrentAngleDeg());
+        if (intake != null) intake.stopIntake();
+    }
+
+    // =========================
+    // ===== PANELS DRAWING =====
+    // =========================
+    private void drawRobotOnPanels(Pose pose) {
+        if (pose == null
+                || Double.isNaN(pose.getX())
+                || Double.isNaN(pose.getY())
+                || Double.isNaN(pose.getHeading())) return;
+
+        panelsField.moveCursor(pose.getX(), pose.getY());
+        panelsField.circle(ROBOT_RADIUS);
+
+        Vector v = pose.getHeadingAsUnitVector();
+        v.setMagnitude(ROBOT_RADIUS);
+
+        panelsField.moveCursor(pose.getX(), pose.getY());
+        panelsField.line(pose.getX() + v.getXComponent(), pose.getY() + v.getYComponent());
+
+        panelsField.update();
+    }
+
+    // =========================
+    // ===== POSE HELPERS =======
+    // =========================
     private static double wrapRad(double a) {
         while (a >= Math.PI) a -= 2.0 * Math.PI;
         while (a < -Math.PI) a += 2.0 * Math.PI;
@@ -399,286 +728,5 @@ public class RedAutoUp extends OpMode {
         double dhDeg = Math.toDegrees(dhRad);
 
         return dist <= posTolIn && Math.abs(dhDeg) <= headTolDeg;
-    }
-
-    /** Turret angle needed so camera/turret faces a fixed FIELD direction. */
-    private double turretAngleToFaceFieldDeg(double fieldDeg) {
-        double robotHeadingDeg = Math.toDegrees(follower.getPose().getHeading());
-        return wrapDeg(fieldDeg - robotHeadingDeg);
-    }
-
-    private void startShootSequence() {
-        shooting = true;
-        yEdgeSent = false;
-        shootStartMs = System.currentTimeMillis();
-        ejectEverStarted = false;  // <---
-    }
-
-    private boolean updateShootSequence() {
-        if (!shooting) return true; // not shooting => "done"
-
-        switch (shootState) {
-            case 0:
-                // shooter.setRpm(SOME_RPM);
-                // turret.goToAngle(... optional hold/aim ...)
-                shootState = 1;
-                shootTimer.resetTimer();
-                break;
-
-            case 1:
-                // wait for spinup (or check shooter.atSpeed())
-                if (shootTimer.getElapsedTimeSeconds() > 0.5 /* or shooter.atSpeed() */) {
-                    // loader.fire();  or spindexer.feedOne(); etc
-                    shootState = 2;
-                    shootTimer.resetTimer();
-                }
-                break;
-
-            case 2:
-                // wait for shot cycle to finish (servo return, index settle)
-                if (shootTimer.getElapsedTimeSeconds() > 0.35) {
-                    // loader.reset(); etc
-                    shooting = false;
-                    return true; // done shooting
-                }
-                break;
-        }
-        return false; // still shooting
-    }
-
-//    private void startShootSequence() {
-//        shooting = true;
-//        yEdgeSent = false;
-//        shootStartMs = System.currentTimeMillis();
-//    }
-
-    private boolean shooterAtSpeed() {
-        double target = shooter.getTargetRpm();
-        double cur = shooter.getCurrentRpmEstimate();
-        return Math.abs(target - cur) < READY_ERR_RPM;
-    }
-
-    /**
-     * @param fieldPos 0 near, 1 far
-     * @param tagOverride 0/21/22/23 like TeleOp driverPatternTag
-     * @return true when shooting is complete
-     */
-    private boolean updateShootSequence(int fieldPos, int tagOverride) {
-        if (!shooting) return true;
-
-        long now = System.currentTimeMillis();
-
-        // keep loader updated
-        loader.updateLoader();
-
-        // keep spindexer running
-        boolean allowFire = shooterAtSpeed() || (now - shootStartMs) > MIN_SPINUP_MS;
-
-        boolean yEdge = false;
-        if (allowFire && !yEdgeSent) {
-            yEdge = true;     // EXACTLY one loop
-            yEdgeSent = true;
-        }
-
-
-        // IMPORTANT: keep shooter ON during the entire eject sequence
-        spindexer.update(telemetry, loader, yEdge, autoPatternTag);
-
-        if (spindexer.isEjecting()) ejectEverStarted = true;
-
-// only allow "done" AFTER eject has started at least once
-        if (yEdgeSent && ejectEverStarted && !spindexer.isEjecting()) {
-            shooting = false;
-            return true;
-        }
-
-        return false;
-    }
-
-    private boolean tagSeen() {
-        // Pattern tags 21/22/23 (for spindexer)
-        if (vision.getPatternTag() != 0) return true;
-
-        // Goal tags 20/24 (for aiming)
-        return !Double.isNaN(vision.getGoalTxDegOrNaN());
-    }
-
-    private boolean turretAtZero() {
-        return Math.abs(turret.getCurrentAngleDeg()) <= TURRET_ZERO_TOL_DEG;
-    }
-
-    private void updateAutoPatternTag() {
-        if (autoPatternTag != 0) return;         // already latched
-        int t = vision.getPatternTag();          // 21/22/23 or 0
-        if (t == 21 || t == 22 || t == 23) {
-            autoPatternTag = t;                  // latch once
-        }
-    }
-
-
-    // ============================
-    // ===== OPMODE LIFECYCLE =====
-    // ============================
-    @Override
-    public void init() {
-        pathTimer = new Timer();
-        opmodeTimer = new Timer();
-        opmodeTimer.resetTimer();
-
-        follower = Constants.createFollower(hardwareMap);
-
-        panelsField = PanelsField.INSTANCE.getField();
-        panelsField.setOffsets(PanelsField.INSTANCE.getPresets().getPEDRO_PATHING());
-
-        turret = new TurretSubsystem(hardwareMap);
-        vision = new VisionSubsystem(hardwareMap);
-        shooter   = new ShooterSubsystemPIDF(hardwareMap);
-        loader    = new LoaderSubsystem(hardwareMap);
-        spindexer = new SpindexerSubsystem_State_new(hardwareMap);
-        intake = new IntakeSubsystem_Motor(hardwareMap);
-
-        //spindexer.setCoast(true);
-        follower.setStartingPose(startPose);
-        follower.update();
-        buildPaths();
-
-        //spindexer.homeToIntake();
-
-        telemetry.addLine("ExampleAuto ready");
-        telemetry.update();
-
-//        spindexer.presetSlots(
-//                SpindexerSubsystem_State_new.Ball.GREEN,
-//                SpindexerSubsystem_State_new.Ball.PURPLE,
-//                SpindexerSubsystem_State_new.Ball.PURPLE
-//        );
-
-
-
-    }
-
-    @Override
-    public void init_loop() {
-        // optional: show tags while waiting
-        telemetry.addData("Seen Tags", vision.getSeenTagIdsString());
-        int slot = spindexer.dbgSlotAtIntakeIfWithin(60.0);
-        double absRaw = spindexer.dbgAbsRawDeg();
-        double absInt = spindexer.dbgAbsInternalDeg();
-        double err    = spindexer.dbgErrToNearestIntakeSlotDeg();
-
-        SpindexerSubsystem_State_new.Ball[] s = spindexer.getSlots();
-
-        telemetry.addData("IntakeIdx", spindexer.getIntakeSlotIndex());
-        telemetry.addData("Slot0", s[0]);
-        telemetry.addData("Slot1", s[1]);
-        telemetry.addData("Slot2", s[2]);
-        telemetry.addData("Full", spindexer.isFull());
-        telemetry.addData("AnyBall", spindexer.hasAnyBall());
-
-
-        telemetry.addData("Spindexer absRaw", "%.1f", absRaw);
-        telemetry.addData("Spindexer absInternal", "%.1f", absInt);
-        telemetry.addData("Nearest intake err(deg)", "%.1f", err);
-
-        if (slot >= 0) {
-            telemetry.addData("INTAKE SLOT", "%d (within ±60°)", slot);
-        } else {
-            telemetry.addData("INTAKE SLOT", "between slots");
-        }
-        telemetry.update();
-
-        // keep loader null, yEdge false so it can NEVER start eject
-        //spindexer.update(telemetry, null, false, 0);
-        //spindexer.homeToIntake();
-    }
-
-    @Override
-    public void start() {
-        opmodeTimer.resetTimer();
-
-        setPathState(0);
-        spindexer.setCoast(false);
-        //spindexer.homeToIntake();
-        turretPhase = TurretPhase.PREAIM_FIELD90;
-
-    }
-
-    @Override
-    public void loop() {
-        // Keep shooter spinning the whole match
-        shooter.update(true, false, false, fieldPos);
-
-        follower.update();
-
-        //get shooting pattern
-        updateAutoPatternTag();
-        // keep turret tracking the entire time (optional toggle at top)
-        updateTurretControl();
-        turret.update();
-
-        loader.updateLoader();
-
-        // Keep spindexer state machine alive even when not shooting
-        boolean yEdge = false;
-        //spindexer.update(telemetry, loader, yEdge, autoPatternTag);
-        if (!shooting) {
-            spindexer.update(telemetry, loader, false, autoPatternTag);
-        }
-        autonomousPathUpdate();
-
-        intake.startIntake();   // ALWAYS ON
-
-        drawRobotOnPanels(follower.getPose());
-        //autonomousPathUpdate();
-        PoseStorage.lastPose = follower.getPose();
-        PoseStorage.lastTurretAngleDeg = turret.getCurrentAngleDeg();
-
-        telemetry.addData("pathState", pathState);
-        telemetry.addData("pose", follower.getPose());
-        telemetry.addData("Seen Tags", vision.getSeenTagIdsString());
-        telemetry.addData("tx(tag " + TRACK_TAG_ID + ")", "%.2f", vision.getTagTxDegOrNaN(TRACK_TAG_ID));
-        telemetry.addData("AutoPatternTag", autoPatternTag);
-        SpindexerSubsystem_State_new.Ball[] s = spindexer.getSlots();
-
-        telemetry.addData("IntakeIdx", spindexer.getIntakeSlotIndex());
-        telemetry.addData("Slot0", s[0]);
-        telemetry.addData("Slot1", s[1]);
-        telemetry.addData("Slot2", s[2]);
-        telemetry.addData("Full", spindexer.isFull());
-        telemetry.addData("AnyBall", spindexer.hasAnyBall());
-        telemetry.addData("Shooting", shooting);
-        telemetry.addData("yEdgeSent", yEdgeSent);
-        telemetry.addData("Spd ejecting", spindexer.isEjecting());
-        telemetry.addData("Spd curAng", "%.1f", spindexer.getCurrentAngleDeg());
-        telemetry.addData("Spd tgtAng", "%.1f", spindexer.getTargetAngleDeg());
-
-        telemetry.update();
-    }
-
-    @Override
-    public void stop() {
-        // safety stop
-        PoseStorage.lastPose = follower.getPose();
-        PoseStorage.lastTurretAngleDeg = turret.getCurrentAngleDeg();
-        if (turret != null) turret.goToAngle(turret.getCurrentAngleDeg());
-        if (intake != null) intake.stopIntake();
-    }
-
-    // ============================
-    // ===== PANELS DRAWING =======
-    // ============================
-    private void drawRobotOnPanels(Pose pose) {
-        if (pose == null || Double.isNaN(pose.getX()) || Double.isNaN(pose.getY()) || Double.isNaN(pose.getHeading())) return;
-
-        panelsField.moveCursor(pose.getX(), pose.getY());
-        panelsField.circle(ROBOT_RADIUS);
-
-        Vector v = pose.getHeadingAsUnitVector();
-        v.setMagnitude(ROBOT_RADIUS);
-
-        panelsField.moveCursor(pose.getX(), pose.getY());
-        panelsField.line(pose.getX() + v.getXComponent(), pose.getY() + v.getYComponent());
-
-        panelsField.update();
     }
 }

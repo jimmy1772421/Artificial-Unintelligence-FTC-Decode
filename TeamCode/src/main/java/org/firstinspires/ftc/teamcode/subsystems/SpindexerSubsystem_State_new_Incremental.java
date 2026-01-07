@@ -125,7 +125,7 @@ public class SpindexerSubsystem_State_new_Incremental {
 
     private Ball pendingColor = Ball.EMPTY;
     private long pendingColorSinceMs = 0;
-    private static final long COLOR_STABLE_MS = 70; // try 50–120
+    private static final long COLOR_STABLE_MS = 30; // try 50–120
 
 
     // ==== PATTERN / TAG ====
@@ -499,6 +499,13 @@ public class SpindexerSubsystem_State_new_Incremental {
         telemetry.addData("Spd/ABS", "disabled (incremental-only)");
         telemetry.addData("Spd/zeroTicks", zeroTicks);
     }
+
+    public void presetSlots(Ball s0, Ball s1, Ball s2) {
+        slots[0] = (s0 == null) ? Ball.EMPTY : s0;
+        slots[1] = (s1 == null) ? Ball.EMPTY : s1;
+        slots[2] = (s2 == null) ? Ball.EMPTY : s2;
+    }
+
 
     // =========================
     // ===== EJECT SELECTION =====

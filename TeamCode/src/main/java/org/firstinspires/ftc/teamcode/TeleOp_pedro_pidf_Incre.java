@@ -113,12 +113,22 @@ public class TeleOp_pedro_pidf_Incre extends OpMode {
     private enum TurretAimMode { MANUAL_HOLD, VISION_TRACK, ODO_FACE_POINT }
     private TurretAimMode turretAimMode = TurretAimMode.MANUAL_HOLD;
 
+    // Remember what turret mode we were in before shoot assist
+    private TurretAimMode turretAimModeBeforeAssist = TurretAimMode.MANUAL_HOLD;
+
+    // (optional) not required, but useful if you later add hysteresis
+    private boolean assistVisionEnabled = false;
+
     // Face point in ODO mode (Pedro coords)
     public static double ODO_FACE_X = 132.0;
     public static double ODO_FACE_Y = 136.0;
 
     // ===== POST-PATH ACTIONS =====
     private boolean postPathActionsDone = false;
+
+    private boolean waitingForTagAfterAssist = false;
+    public static int TAG_STABLE_FRAMES = 3;
+    private int tagStableCount = 0;
 
     private final LoopTimer loopTimer = new LoopTimer(10); // smoothing window
     private boolean loopTimerPrimed = false;
@@ -278,9 +288,36 @@ public class TeleOp_pedro_pidf_Incre extends OpMode {
             automatedDrive = false;
 
             if (!postPathActionsDone) {
+                // Step 1: point turret to the "tag-visible" angle first
+                turretAimMode = TurretAimMode.MANUAL_HOLD;
                 turret.goToAngle(0.0);
                 turretPositionCommandActive = true;
+
+                // Step 2: wait until tag is actually seen, then switch to tracking
+                waitingForTagAfterAssist = true;
+                tagStableCount = 0;
+
                 postPathActionsDone = true;
+            }
+        }
+
+        // ===== Shoot Assist: when arrived, hold turret at 0 until we see tag, then enable tracking =====
+        if (shootAssistActive && postPathActionsDone && waitingForTagAfterAssist) {
+            double tx = vision.getGoalTxDegOrNaN();
+
+            if (!Double.isNaN(tx)) tagStableCount++;
+            else tagStableCount = 0;
+
+            if (tagStableCount >= TAG_STABLE_FRAMES) {
+                waitingForTagAfterAssist = false;
+                turretAimMode = TurretAimMode.VISION_TRACK;
+                turretPositionCommandActive = true;
+                assistVisionEnabled = true;
+            } else {
+                // keep turret pointed at 0 so camera can acquire tag
+                turretAimMode = TurretAimMode.MANUAL_HOLD;
+                turret.goToAngle(0.0);
+                turretPositionCommandActive = true;
             }
         }
 
@@ -330,6 +367,10 @@ public class TeleOp_pedro_pidf_Incre extends OpMode {
         // ===== TURRET MANUAL/TRACKING =====
         double stickX = gamepad1.right_stick_x;
         boolean manualActive = Math.abs(stickX) > 0.05;
+
+        if (manualActive) {
+            waitingForTagAfterAssist = false;
+        }
 
         if (manualActive) {
             turretAimMode = TurretAimMode.MANUAL_HOLD;
@@ -456,20 +497,35 @@ public class TeleOp_pedro_pidf_Incre extends OpMode {
         if (intakeOn) intake.startIntake();
         else intake.stopIntake();
 
+
         // ===== AUTOFIRE PULSE (shoot assist) =====
         if (shootAssistActive) {
-            boolean turretAtZero = Math.abs(turret.getCurrentAngleDeg()) < TURRET_ANGLE_TOL_DEG;
+            // pose ready
             boolean arrived = atPose(follower.getPose(), activeShootPose, 2.0, 6.0);
 
-            double targetRpm = shooter.getTargetRpm();
+            // rpm ready
+            double targetRpm  = shooter.getTargetRpm();
             double currentRpm = shooter.getCurrentRpmEstimate();
-            boolean rpmReady = Math.abs(targetRpm - currentRpm) < 150;
+            boolean rpmReady  = Math.abs(targetRpm - currentRpm) < 150;
 
-            if (postPathActionsDone && turretAtZero && arrived && rpmReady && now > autoFireCooldownUntil) {
+            // vision aimed
+            double tx = vision.getGoalTxDegOrNaN();
+            double offset = (fieldPos == 0) ? AIM_OFFSET_NEAR_DEG : AIM_OFFSET_FAR_DEG;
+
+            boolean visionAimed = !Double.isNaN(tx) &&
+                    Math.abs(TX_SIGN * (tx + offset)) <= TX_DEADBAND_DEG;
+
+            // Only allow autofire after tag acquired + tracking
+            boolean turretReady = !waitingForTagAfterAssist
+                    && (turretAimMode == TurretAimMode.VISION_TRACK)
+                    && visionAimed;
+
+            if (postPathActionsDone && turretReady && arrived && rpmReady && now > autoFireCooldownUntil) {
                 autoFirePulse = true;
                 autoFireCooldownUntil = now + 800;
             }
         }
+
 
         // record pose
         PoseStorage.lastPose = follower.getPose();
@@ -590,18 +646,37 @@ public class TeleOp_pedro_pidf_Incre extends OpMode {
 
     private void startShootAssist(Pose target) {
         activeShootPose = target;
+
+        // Remember what the turret was doing before shoot assist
+        turretAimModeBeforeAssist = turretAimMode;
+
+        // Optional: keep turret steady while driving (prevents tx chasing mid-drive)
+        turretAimMode = TurretAimMode.MANUAL_HOLD;
+        turretPositionCommandActive = false;
+
+        assistVisionEnabled = false;
+
         follower.followPath(buildLineToPose(target));
         automatedDrive = true;
         shootAssistActive = true;
         postPathActionsDone = false;
     }
 
+
     private void cancelShootAssist() {
         follower.startTeleopDrive();
         automatedDrive = false;
         shootAssistActive = false;
         postPathActionsDone = false;
+
+        waitingForTagAfterAssist = false;
+        tagStableCount = 0;
+
+        // Restore whatever mode you had before shoot assist
+        turretAimMode = turretAimModeBeforeAssist;
+        assistVisionEnabled = false;
     }
+
 
     private static double wrapRad(double r) {
         while (r > Math.PI) r -= 2.0 * Math.PI;

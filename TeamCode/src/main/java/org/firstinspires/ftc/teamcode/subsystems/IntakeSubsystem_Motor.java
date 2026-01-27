@@ -13,7 +13,6 @@ public class IntakeSubsystem_Motor {
     private double speed = 5500.0;
 
     // Internal helpers
-
     private static double rpmToTicksPerSec(double rpm) {
         return rpm * TICKS_PER_REV / 60.0;
     }

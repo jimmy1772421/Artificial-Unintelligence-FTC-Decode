@@ -10,7 +10,7 @@ public class IntakeSubsystem_Motor {
     private static final double TICKS_PER_REV = 28.0;
     private static final double PHYSICAL_MAX_RPM = 6000.0;
     private static final double RPM_STEP = 250.0;
-    private double speed = 2500.0;
+    private double speed = 5500.0;
 
     // Internal helpers
     private static double rpmToTicksPerSec(double rpm) {
@@ -26,7 +26,7 @@ public class IntakeSubsystem_Motor {
 
     public IntakeSubsystem_Motor(HardwareMap hardwareMap) {
         motor = hardwareMap.get(DcMotorEx.class, "intakeMotor");
-        motor.setDirection(DcMotorSimple.Direction.REVERSE);
+        motor.setDirection(DcMotorSimple.Direction.FORWARD);
         motor.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.FLOAT);
         motor.setMode(DcMotor.RunMode.RUN_USING_ENCODER);
 

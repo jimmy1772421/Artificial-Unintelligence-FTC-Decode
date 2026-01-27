@@ -73,7 +73,7 @@ public class SpindexerSubsystem_Passive_State_new_Incremental {
     }
 
     // Motor encoder
-    private static final double TICKS_PER_REV = 384.5; // goBILDA 435rpm YJ integrated encoder
+    private static final double TICKS_PER_REV = 4000.0; // goBILDA 435rpm YJ integrated encoder or elc V2
     private static final double DEG_PER_TICK = 360.0 / TICKS_PER_REV;
 
     // Geometry (wheel-frame pockets)

@@ -13,7 +13,7 @@ import org.firstinspires.ftc.teamcode.pedroPathing.Constants;
 import org.firstinspires.ftc.teamcode.subsystems.Drawing;
 import org.firstinspires.ftc.teamcode.subsystems.LoaderSubsystem;
 import org.firstinspires.ftc.teamcode.subsystems.PoseStorage;
-import org.firstinspires.ftc.teamcode.subsystems.ShooterSubsystemFF;
+import org.firstinspires.ftc.teamcode.subsystems.ShooterSubsystemFF_dualMotor;
 import org.firstinspires.ftc.teamcode.subsystems.SpindexerSubsystem_Passive_State_new_Incremental;
 
 @Configurable
@@ -26,7 +26,7 @@ public class TeleOp_PassiveSpindexer extends OpMode {
     private boolean prevSlow = false;
 
     // ===== Subsystems =====
-    private ShooterSubsystemFF shooter;
+    private ShooterSubsystemFF_dualMotor shooter;
     private SpindexerSubsystem_Passive_State_new_Incremental spindexer;
     private LoaderSubsystem loader;
 
@@ -77,7 +77,7 @@ public class TeleOp_PassiveSpindexer extends OpMode {
         telemetry = new MultipleTelemetry(telemetry, dashboard.getTelemetry());
 
         // Subsystems
-        shooter   = new ShooterSubsystemFF(hardwareMap);
+        shooter   = new ShooterSubsystemFF_dualMotor(hardwareMap);
         loader    = new LoaderSubsystem(hardwareMap);
         spindexer = new SpindexerSubsystem_Passive_State_new_Incremental(hardwareMap);
 
@@ -210,8 +210,28 @@ public class TeleOp_PassiveSpindexer extends OpMode {
 
         telemetry.addData("ShooterOn", shooterOn);
         telemetry.addData("FieldPos", fieldPos == 0 ? "NEAR" : "FAR");
-        telemetry.addData("TargetRPM", "%.0f", shooter.getTargetRpm());
-        telemetry.addData("RPM(est)", "%.0f", shooter.getCurrentRpmEstimate());
+        double targetRpm = shooter.getActiveTargetRpm();
+        double curRpm    = shooter.getCurrentRpmEstimate();
+        double errRpm    = shooter.getErrorRpm();
+
+        telemetry.addData("TargetRPM", "%.0f", targetRpm);
+        telemetry.addData("RPM(est)",  "%.0f", curRpm);
+        telemetry.addData("ErrRPM",    "%.0f", errRpm);
+
+        telemetryM.addData("shooter/targetRpm", targetRpm);
+        telemetryM.addData("shooter/rpm", curRpm);
+        telemetryM.addData("shooter/errRpm", errRpm);
+
+
+// RC + Dashboard telemetry
+        telemetry.addData("TargetRPM", "%.0f", targetRpm);
+        telemetry.addData("RPM(est)", "%.0f", curRpm);
+        telemetry.addData("ErrRPM",   "%.0f", errRpm);
+
+// PanelsTelemetry (nice for graphs)
+        telemetryM.addData("shooter/targetRpm", targetRpm);
+        telemetryM.addData("shooter/errRpm", errRpm);
+
 
         telemetry.addData("Sp Full", spFull);
         telemetry.addData("Sp Ejecting", spindexer.isEjecting());

@@ -170,6 +170,7 @@ public class ShooterSubsystemFF_dualMotor {
         boolean on = shooterOnCommand || TUNE_FORCE_ON;
         isOn = on;
 
+
         double targetFlywheelRpm = TUNE_FORCE_ON ? TUNE_FORCE_RPM : getTargetRpm();
         double targetMotorRpm = (isOn && targetFlywheelRpm > 0) ? flywheelRpmToMotorRpm(targetFlywheelRpm) : 0.0;
         double targetMotorTps = (targetMotorRpm > 0) ? motorRpmToTicksPerSec(targetMotorRpm) : 0.0;

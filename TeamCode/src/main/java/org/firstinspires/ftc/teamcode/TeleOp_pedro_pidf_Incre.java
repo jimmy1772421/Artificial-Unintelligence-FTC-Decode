@@ -387,24 +387,23 @@ public class TeleOp_pedro_pidf_Incre extends OpMode {
             switch (turretAimMode) {
                 case VISION_TRACK: {
                     double tx = vision.getGoalTxDegOrNaN();
-
-                    // pick offset based on fieldPos (your existing toggle)
                     double offset = (fieldPos == 0) ? AIM_OFFSET_NEAR_DEG : AIM_OFFSET_FAR_DEG;
 
                     if (!Double.isNaN(tx)) {
                         double aimErrDeg = TX_SIGN * (tx + offset);
 
-                        if (Math.abs(aimErrDeg) > TX_DEADBAND_DEG) {
-                            double step = Range.clip(aimErrDeg, -TX_MAX_STEP_DEG, TX_MAX_STEP_DEG);
-                            turret.goToAngle(turret.getCurrentAngleDeg() + step);
-                            turretPositionCommandActive = true;
-                        } else {
-                            turret.goToAngle(turret.getCurrentAngleDeg());
-                            turretPositionCommandActive = true;
-                        }
+                        // If camera is on the turret, a good first model is: desired = current + aimErr
+                        // Add a gain < 1 if it overshoots.
+                        double VISION_CORR_GAIN = 0.7;      // try 0.5..1.0
+                        double VISION_MAX_CORR_DEG = 15.0;  // cap big jumps (NOT 2 deg)
+
+                        double corr = Range.clip(aimErrDeg * VISION_CORR_GAIN,
+                                -VISION_MAX_CORR_DEG, VISION_MAX_CORR_DEG);
+
+                        turret.setTargetAngleDegNoReset(turret.getCurrentAngleDeg() + corr);
+                        turretPositionCommandActive = true;
                     } else {
-                        // no tag: hold position (or you could choose to re-home)
-                        turret.goToAngle(turret.getCurrentAngleDeg());
+                        turret.setTargetAngleDegNoReset(turret.getCurrentAngleDeg());
                         turretPositionCommandActive = true;
                     }
                     break;
@@ -418,17 +417,17 @@ public class TeleOp_pedro_pidf_Incre extends OpMode {
 
                 case MANUAL_HOLD:
                 default: {
-                    if (turretPositionCommandActive) {
-                        double err = turret.getTargetAngleDeg() - turret.getCurrentAngleDeg();
-                        if (Math.abs(err) < TURRET_ANGLE_TOL_DEG) turretPositionCommandActive = false;
-                    } else {
-                        turret.setManualPower(0.0);
-                    }
+                    // Always keep holding the last target (or current)
+                    turret.holdTargetNoReset();
+                    turretPositionCommandActive = true;
                     break;
                 }
             }
         }
-
+        turret.setVisionKpBoostEnabled(turretAimMode == TurretAimMode.VISION_TRACK);
+        boolean visionMode = (turretAimMode == TurretAimMode.VISION_TRACK);
+        turret.setVisionKpBoostEnabled(visionMode);
+        turret.setVisionMinPowerEnabled(visionMode);
         turret.update();
 
         // ===== SPINDEXER COMMAND (GO TO INTAKE, NOT rezero) =====
@@ -600,8 +599,8 @@ public class TeleOp_pedro_pidf_Incre extends OpMode {
         telemetry.addData("Pattern Tag", driverPatternTag);
         telemetry.addData("Pattern", patternStringForTag(driverPatternTag));
 
-//        telemetry.addData("Seen Tags", vision.getSeenTagIdsString());
-//        telemetry.addData("Goal tx", "%.2f", vision.getGoalTxDegOrNaN());
+        telemetry.addData("Seen Tags", vision.getSeenTagIdsString());
+        telemetry.addData("Goal tx", "%.2f", vision.getGoalTxDegOrNaN());
 
         telemetryM.debug("position", follower.getPose());
 //        telemetryM.debug("velocity", follower.getVelocity());

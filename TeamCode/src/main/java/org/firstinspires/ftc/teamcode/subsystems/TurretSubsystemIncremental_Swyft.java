@@ -24,7 +24,7 @@ public class TurretSubsystemIncremental_Swyft {
     public static double ABS_ZERO_OFFSET_DEG = 0.0; // zero offset applied inside encoder wrapper
 
     // ===== Ratio swap easily =====
-    public static double DRIVER_PULLEY_TEETH = 70.0;  // set 60 or 70
+    public static double DRIVER_PULLEY_TEETH = 60.0;  // set 60 or 70
     public static double TURRET_PULLEY_TEETH = 280.0;
 
     // ===== Direction knobs =====
@@ -35,25 +35,27 @@ public class TurretSubsystemIncremental_Swyft {
     // ===== Limits =====
     public static double MIN_ANGLE_DEG = -200.0;
     public static double MAX_ANGLE_DEG =  200.0;
-    public static double ENDSTOP_MARGIN_DEG = 5.0;
+    public static double ENDSTOP_MARGIN_DEG = 3.0;
+    public static double ABS_NOISE_DEADBAND_DEG = 0.15; // start 0.10..0.30 (shaft-deg)
+
 
     // ===== PIDF (deg -> power) =====
-    public static double kP = 0.0011;
-    public static double kI = 0.000;
+    public static double kP = 0.006;
+    public static double kI = 0.0008;
     public static double kD = 0.00;
 
     // Feedforward:
     // kS: static friction power (useful for CR servos + belts)
     // kV: power per (deg/s) of desired target velocity (often small or 0)
-    public static double kS = 0.04;
+    public static double kS = 0.07;
     public static double kV = 0.0000;
 
     public static double I_CLAMP = 0.25;
     public static double HOLD_DEADBAND_DEG = 0.25;
-    public static double MAX_AUTO_POWER = 0.85;
-    public static double STOP_TOL_DEG = 0.6;      // inside this, stop
-    public static double MINPOWER_BAND_DEG = 2.0; // if error is between STOP_TOL and this, force min power
-    public static double MIN_POWER = 0.03;        // tune to just start moving reliably
+    public static double MAX_AUTO_POWER = 0.7;
+    public static double STOP_TOL_DEG = 0.8;      // inside this, stop
+    public static double MINPOWER_BAND_DEG = 10.0; // if error is between STOP_TOL and this, force min power
+    public static double MIN_POWER = 0.06;        // tune to just start moving reliably
 
 
     // ===== Slew rate limiting =====
@@ -63,7 +65,7 @@ public class TurretSubsystemIncremental_Swyft {
     public static double MAX_POWER_SLEW_PER_SEC = 2.5;        // try 1..8
 
     // ===== ABS noise guards =====
-    public static double MAX_ABS_STEP_DEG_PER_UPDATE = 120.0; // reject analog spikes
+    public static double MAX_ABS_STEP_DEG_PER_UPDATE = 40.0; // reject analog spikes
 
     // ===== Aim =====
     private static final double FACE_TARGET_MIN_DIST_IN = 0.5;
@@ -109,6 +111,21 @@ public class TurretSubsystemIncremental_Swyft {
 
     private long lastTimeNs = 0L;
 
+    // Extra P gain only during vision tracking
+    public static double VISION_KP_MULT = 2.0; // start 1.5..4.0
+    private boolean visionKpBoostEnabled = false;
+    public static double VISION_MIN_POWER = 0.10; // tune: 0.06..0.18
+    private boolean visionMinPowerEnabled = false;
+
+    public void setVisionMinPowerEnabled(boolean enabled) {
+        visionMinPowerEnabled = enabled;
+    }
+
+    public void setVisionKpBoostEnabled(boolean enabled) {
+        visionKpBoostEnabled = enabled;
+    }
+
+
     public TurretSubsystemIncremental_Swyft(HardwareMap hardwareMap) {
         absEncoder = new AbsoluteAnalogEncoder(hardwareMap, ABS_ENCODER_NAME, ABS_ANALOG_RANGE_V, AngleUnit.DEGREES)
                 .setReversed(ABS_REVERSED)
@@ -135,14 +152,18 @@ public class TurretSubsystemIncremental_Swyft {
 
         lastAbsDeg0to360 = absNow;
 
-        double turretFromEncoder = continuousShaftDeg / shaftRevPerTurretRev(); // turret angle implied by encoder
+        double turretFromEncoder = continuousShaftDeg / shaftRevPerTurretRev();
 
-        if (OpModeStorage.turretAngleOffsetDeg != null) {
-            angleOffsetDeg = OpModeStorage.turretAngleOffsetDeg;
-        } else {
-            // Define "where we are right now" as 0°
+        if (!OpModeStorage.turretInitDone) {
+            // FIRST OpMode in this RC app session: define "current position = 0°"
             angleOffsetDeg = -turretFromEncoder;
             OpModeStorage.turretAngleOffsetDeg = angleOffsetDeg;
+            OpModeStorage.turretInitDone = true;
+        } else {
+            // After first OpMode: NEVER change the reference automatically
+            if (OpModeStorage.turretAngleOffsetDeg != null) {
+                angleOffsetDeg = OpModeStorage.turretAngleOffsetDeg;
+            }
         }
 
         recomputeTurretAngleCached();
@@ -167,15 +188,17 @@ public class TurretSubsystemIncremental_Swyft {
     }
     public boolean isTrackEnabled() { return trackEnabled; }
 
-    public void homeHereAsZero() { setAngleReferenceDeg(0.0); }
+    public void homeHereAsZero() {
+//        setAngleReferenceDeg(0.0);
+    }
 
     public void setAngleReferenceDeg(double currentAngleShouldBeDeg) {
-        angleOffsetDeg += (currentAngleShouldBeDeg - currentTurretDeg);
-        OpModeStorage.turretAngleOffsetDeg = angleOffsetDeg;
-
-        targetCmdDeg = currentAngleShouldBeDeg;
-        targetDeg = currentAngleShouldBeDeg;
-        resetPid();
+//        angleOffsetDeg += (currentAngleShouldBeDeg - currentTurretDeg);
+//        OpModeStorage.turretAngleOffsetDeg = angleOffsetDeg;
+//
+//        targetCmdDeg = currentAngleShouldBeDeg;
+//        targetDeg = currentAngleShouldBeDeg;
+//        resetPid();
     }
 
     public void setManualPower(double power) {
@@ -235,7 +258,7 @@ public class TurretSubsystemIncremental_Swyft {
         if (dt <= 1e-4) dt = 0.02;
 
         // 1) unwrap ABS once per loop
-        unwrapStep();
+        unwrapStep(dt);
 
         // 2) cache turret angle once per loop
         recomputeTurretAngleCached();
@@ -289,13 +312,25 @@ public class TurretSubsystemIncremental_Swyft {
         double dErr = (err - lastErr) / dt;
         lastErr = err;
 
-        double out = (kP * err) + (kI * iTerm) + (kD * dErr);
+        double kpEff = kP * (visionKpBoostEnabled ? VISION_KP_MULT : 1.0);
+        double out = (kpEff * err) + (kI * iTerm) + (kD * dErr);
 
         // kS only when we actually want motion
         out += Math.signum(err) * kS;
 
         // velocity feedforward from slew-limited target velocity
         out += kV * desiredVelDegPerSec;
+
+        // after computing out (and adding kS/kV), before clipping:
+        double aerr = Math.abs(err);
+
+    // If we’re outside stop tolerance but still “small-ish”, force enough power to move
+        if (aerr > STOP_TOL_DEG && aerr < MINPOWER_BAND_DEG) {
+            out = Math.signum(err) * Math.max(Math.abs(out), MIN_POWER);
+        }
+        if (visionMinPowerEnabled && aerr > STOP_TOL_DEG) {
+            out = Math.signum(err) * Math.max(Math.abs(out), VISION_MIN_POWER);
+        }
 
         return Range.clip(out, -MAX_AUTO_POWER, MAX_AUTO_POWER);
     }
@@ -323,7 +358,7 @@ public class TurretSubsystemIncremental_Swyft {
         return deg;
     }
 
-    private void unwrapStep() {
+    private void unwrapStep(double dt) {
         double absDeg = readAbs0to360();
 
         if (Double.isNaN(lastAbsDeg0to360)) {
@@ -332,20 +367,28 @@ public class TurretSubsystemIncremental_Swyft {
             return;
         }
 
-        double delta = absDeg - lastAbsDeg0to360;
-        if (delta > 180.0) delta -= 360.0;
-        if (delta < -180.0) delta += 360.0;
+        // Snap absDeg to the nearest 360*k branch around our last continuous value
+        double snapped = absDeg + 360.0 * Math.round((continuousShaftDeg - absDeg) / 360.0);
+        double delta = snapped - continuousShaftDeg;
 
-        if (Math.abs(delta) <= MAX_ABS_STEP_DEG_PER_UPDATE) {
-            continuousShaftDeg += delta;
-            lastAbsDeg0to360 = absDeg;
-        } else {
-            // Spike or legitimately very fast move: resync so we don't get "stuck" rejecting forever
-            lastAbsDeg0to360 = absDeg;
-            // Optionally: clamp instead of ignoring
-            // continuousShaftDeg += Math.signum(delta) * MAX_ABS_STEP_DEG_PER_UPDATE;
+        // Kill tiny jitter so we don't "drift" at rest
+        if (Math.abs(delta) < ABS_NOISE_DEADBAND_DEG) {
+            lastAbsDeg0to360 = absDeg; // keep last updated
+            return;                   // don't change continuousShaftDeg
         }
+
+        // Spike / impossible jump guard
+        // With ~35ms loop, 120 deg/update corresponds to ~3428 deg/s shaft, usually plenty.
+        if (Math.abs(delta) > MAX_ABS_STEP_DEG_PER_UPDATE) {
+            // resync the raw absolute tracker, but don't integrate the jump
+            lastAbsDeg0to360 = absDeg;
+            return;
+        }
+
+        continuousShaftDeg = snapped;
+        lastAbsDeg0to360 = absDeg;
     }
+
 
     private double shaftRevPerTurretRev() {
         return TURRET_PULLEY_TEETH / DRIVER_PULLEY_TEETH; // 280/70=4, 280/60=4.6667
@@ -380,4 +423,20 @@ public class TurretSubsystemIncremental_Swyft {
         if (!Double.isNaN(best)) return best;
         return Range.clip(desiredDeg, MIN_ANGLE_DEG, MAX_ANGLE_DEG);
     }
+    public void setTargetAngleDegNoReset(double commandedAngleDeg) {
+        targetCmdDeg = chooseWrappedWithinLimits(commandedAngleDeg, currentTurretDeg);
+        positionMode = true;
+    }
+    public void holdCurrentNoReset() {
+        positionMode = true;
+        targetCmdDeg = chooseWrappedWithinLimits(currentTurretDeg, currentTurretDeg);
+        // do NOT reset PID
+    }
+
+    public void holdTargetNoReset() {
+        positionMode = true;
+        targetCmdDeg = chooseWrappedWithinLimits(targetDeg, currentTurretDeg);
+        // do NOT reset PID
+    }
+
 }

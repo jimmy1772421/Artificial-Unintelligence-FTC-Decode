@@ -23,4 +23,5 @@ public final class OpModeStorage {
 
     // 0=EMPTY, 1=GREEN, 2=PURPLE
     public static int[] spindexerSlots = null;
+    public static boolean turretInitDone = false;
 }

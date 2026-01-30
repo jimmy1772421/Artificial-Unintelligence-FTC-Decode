@@ -5,6 +5,7 @@ import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
 import com.qualcomm.robotcore.hardware.CRServo;
 import com.qualcomm.robotcore.hardware.Servo;
 import com.qualcomm.robotcore.util.Range;
+import com.bylazar.configurables.annotations.Configurable;
 
 @TeleOp(name = "Servo Test", group = "Test")
 public class ServoTestTeleop extends LinearOpMode {

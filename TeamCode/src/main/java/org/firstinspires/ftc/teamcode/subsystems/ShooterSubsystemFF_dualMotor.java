@@ -31,13 +31,13 @@ public class ShooterSubsystemFF_dualMotor {
     // =========================
     // PANELS TUNABLES (STATIC)
     // =========================
-    public static double TUNE_NEAR_RPM = 2900.0;
-    public static double TUNE_FAR_RPM  = 3100.0;
+    public static double TUNE_NEAR_RPM = 2300.0;
+    public static double TUNE_FAR_RPM  = 3050.0;
 
     public static double TUNE_HOOD_NEAR_POS = HOOD_NEAR_POS;
     public static double TUNE_HOOD_FAR_POS  = HOOD_FAR_POS;
 
-    public static double TUNE_kP = 0.01;
+    public static double TUNE_kP = 0.03;
     public static double TUNE_kI = 0.0;
     public static double TUNE_kD = 0.0;
     public static double TUNE_kV = 0.00042;
@@ -258,4 +258,10 @@ public class ShooterSubsystemFF_dualMotor {
         return getActiveTargetRpm() - getCurrentRpmEstimate();
     }
 
+    public double getKv() { return kV; }
+    public double getKs() { return kS; }
+    public double getTargetTps() { return lastTargetTps; }
+    public double getVelocityTps() { return lastVelTps; }
+    private double lastTargetTps = 0.0;
+    private double lastVelTps = 0.0;
 }

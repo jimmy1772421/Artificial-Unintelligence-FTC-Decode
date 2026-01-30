@@ -15,7 +15,7 @@ public class TurretSubsystemIncremental {
     // Motor / gear constants
     // =========================
     private static final double TICKS_PER_MOTOR_REV = 384.5;
-    private static final double MOTOR_REV_PER_TURRET_REV = 290.0 / 60.0;
+    private static final double MOTOR_REV_PER_TURRET_REV = 280.0 / 60.0;
 
     private static final double TICKS_PER_TURRET_REV =
             TICKS_PER_MOTOR_REV * MOTOR_REV_PER_TURRET_REV;
@@ -52,7 +52,7 @@ public class TurretSubsystemIncremental {
     private static final double TURRET_MOUNT_OFFSET_DEG = 0.0;
 
     public TurretSubsystemIncremental(HardwareMap hardwareMap) {
-        turretMotor = hardwareMap.get(DcMotorEx.class, "turretMotor");
+        turretMotor = hardwareMap.get(DcMotorEx.class, "intakeMotor");
 
         turretMotor.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
         turretMotor.setDirection(DcMotorSimple.Direction.FORWARD);

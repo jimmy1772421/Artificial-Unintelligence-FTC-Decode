@@ -10,11 +10,11 @@ public class IntakeSubsystem {
     private double intakeSpeed = 1.0;
 
     public IntakeSubsystem (HardwareMap hardwareMap) {
-        leftServo = hardwareMap.get(CRServo.class, "leftIntakeServo");
-        rightServo = hardwareMap.get(CRServo.class, "rightIntakeServo");
+        leftServo = hardwareMap.get(CRServo.class, "turretServoA");
+        rightServo = hardwareMap.get(CRServo.class, "turretServoB");
 
         leftServo.setDirection(CRServo.Direction.FORWARD);
-        rightServo.setDirection(CRServo.Direction.REVERSE);
+        rightServo.setDirection(CRServo.Direction.FORWARD);
     }
 
     public void stopIntake(){

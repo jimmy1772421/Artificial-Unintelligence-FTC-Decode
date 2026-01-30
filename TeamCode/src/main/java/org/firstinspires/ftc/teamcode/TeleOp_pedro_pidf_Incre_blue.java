@@ -19,7 +19,7 @@ import com.bylazar.utils.LoopTimer;
 
 import org.firstinspires.ftc.teamcode.pedroPathing.Constants;
 import org.firstinspires.ftc.teamcode.subsystems.Drawing;
-import org.firstinspires.ftc.teamcode.subsystems.IntakeSubsystem_Motor;
+import org.firstinspires.ftc.teamcode.subsystems.IntakeSubsystem;
 import org.firstinspires.ftc.teamcode.subsystems.LoaderSubsystem;
 import org.firstinspires.ftc.teamcode.subsystems.PoseStorage;
 import org.firstinspires.ftc.teamcode.subsystems.ShooterSubsystemFF;
@@ -46,7 +46,7 @@ public class TeleOp_pedro_pidf_Incre_blue extends OpMode {
 
     // ===== SUBSYSTEMS =====
     private ShooterSubsystemFF shooter;
-    private IntakeSubsystem_Motor intake;
+    private IntakeSubsystem intake;
     private SpindexerSubsystem_State_new_Incremental spindexer;
     private LoaderSubsystem loader;
     private TurretSubsystemIncremental turret;
@@ -158,7 +158,7 @@ public class TeleOp_pedro_pidf_Incre_blue extends OpMode {
 
         shooter   = new ShooterSubsystemFF(hardwareMap);
         loader    = new LoaderSubsystem(hardwareMap);
-        intake    = new IntakeSubsystem_Motor(hardwareMap);
+        intake    = new IntakeSubsystem(hardwareMap);
         spindexer = new SpindexerSubsystem_State_new_Incremental(hardwareMap);
         turret    = new TurretSubsystemIncremental(hardwareMap);
         vision    = new VisionSubsystem(hardwareMap);

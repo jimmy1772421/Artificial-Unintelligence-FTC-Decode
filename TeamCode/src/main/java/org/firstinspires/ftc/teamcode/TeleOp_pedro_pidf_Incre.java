@@ -19,13 +19,13 @@ import com.bylazar.utils.LoopTimer;
 
 import org.firstinspires.ftc.teamcode.pedroPathing.Constants;
 import org.firstinspires.ftc.teamcode.subsystems.Drawing;
-import org.firstinspires.ftc.teamcode.subsystems.IntakeSubsystem_Motor;
+import org.firstinspires.ftc.teamcode.subsystems.IntakeSubsystem;
 import org.firstinspires.ftc.teamcode.subsystems.LoaderSubsystem;
 import org.firstinspires.ftc.teamcode.subsystems.PoseStorage;
-import org.firstinspires.ftc.teamcode.subsystems.ShooterSubsystemFF;
+import org.firstinspires.ftc.teamcode.subsystems.ShooterSubsystemFF_dualMotor;
 import org.firstinspires.ftc.teamcode.subsystems.SpindexerSubsystem_State_new;
-import org.firstinspires.ftc.teamcode.subsystems.SpindexerSubsystem_State_new_Incremental;
-import org.firstinspires.ftc.teamcode.subsystems.TurretSubsystemAbsoluteServos;
+import org.firstinspires.ftc.teamcode.subsystems.SpindexerSubsystem_Passive_State_new_Incremental;
+import org.firstinspires.ftc.teamcode.subsystems.TurretSubsystemIncremental;
 import org.firstinspires.ftc.teamcode.subsystems.VisionSubsystem;
 
 import java.util.function.Supplier;
@@ -46,11 +46,11 @@ public class TeleOp_pedro_pidf_Incre extends OpMode {
     private boolean slowMode = false;
 
     // ===== SUBSYSTEMS =====
-    private ShooterSubsystemFF shooter;
-    private IntakeSubsystem_Motor intake;
-    private SpindexerSubsystem_State_new_Incremental spindexer;
+    private ShooterSubsystemFF_dualMotor shooter;
+    private IntakeSubsystem intake;
+    private SpindexerSubsystem_Passive_State_new_Incremental spindexer;
     private LoaderSubsystem loader;
-    private TurretSubsystemAbsoluteServos turret;
+    private TurretSubsystemIncremental turret;
     private VisionSubsystem vision;
     private BulkCacheManager bulk;
 
@@ -84,6 +84,9 @@ public class TeleOp_pedro_pidf_Incre extends OpMode {
 
     // turret mode cycle edge
     private boolean prevModeX = false;
+    // ===== Shooter manual spin-up toggle (gamepad1.rb) =====
+    private boolean shooterManualHold = false;
+    private boolean prevRB1 = false;
 
     // ===== SHOOT POSES (tune these numbers) =====
     public static Pose SHOOT_POSE_NEAR = new Pose(80, 80, Math.toRadians(45));
@@ -172,11 +175,11 @@ public class TeleOp_pedro_pidf_Incre extends OpMode {
                 )
                 .build();
 
-        shooter   = new ShooterSubsystemFF(hardwareMap);
+        shooter   = new ShooterSubsystemFF_dualMotor(hardwareMap);
         loader    = new LoaderSubsystem(hardwareMap);
-        intake    = new IntakeSubsystem_Motor(hardwareMap);
-        spindexer = new SpindexerSubsystem_State_new_Incremental(hardwareMap);
-        turret    = new TurretSubsystemAbsoluteServos(hardwareMap);
+        intake    = new IntakeSubsystem(hardwareMap);
+        spindexer = new SpindexerSubsystem_Passive_State_new_Incremental(hardwareMap);
+        turret    = new TurretSubsystemIncremental(hardwareMap);
         vision    = new VisionSubsystem(hardwareMap);
 
         dashboard = FtcDashboard.getInstance();
@@ -196,7 +199,7 @@ public class TeleOp_pedro_pidf_Incre extends OpMode {
         follower.startTeleopDrive();
         shooterSpinDownDeadline = 0;
 
-        spindexer.homeToIntake();//different from homing load
+//        spindexer.homeToIntake();//different from homing load
         // Do NOT auto-home if you want Auto -> TeleOp continuity.
         // Just hold turret where it already is.
         turret.goToAngle(turret.getCurrentAngleDeg());
@@ -429,12 +432,19 @@ public class TeleOp_pedro_pidf_Incre extends OpMode {
             }
         }
 
-        turret.update();   // don't let PID fight driver stick
+        turret.update();
 
         // ===== SPINDEXER COMMAND (GO TO INTAKE, NOT rezero) =====
         boolean rehomeButton = gamepad1.right_stick_button;
         if (rehomeButton && !prevRehome) spindexer.homeToIntake();
         prevRehome = rehomeButton;
+
+        //manual shooter spinup
+        boolean rb1 = gamepad1.right_bumper;
+        if (rb1 && !prevRB1) {
+            shooterManualHold = !shooterManualHold;
+        }
+        prevRB1 = rb1;
 
         // ===== DRIVER2 PATTERN SELECT =====
         boolean dUp2    = gamepad2.dpad_up;
@@ -459,10 +469,10 @@ public class TeleOp_pedro_pidf_Incre extends OpMode {
         loader.updateLoader();
 
         // Compute hasAnyBall locally from slots (since subsystem doesn't expose it)
-        SpindexerSubsystem_State_new_Incremental.Ball[] slots = spindexer.getSlots();
+        SpindexerSubsystem_Passive_State_new_Incremental.Ball[] slots = spindexer.getSlots();
         boolean hasAnyBall = false;
         for (int i = 0; i < slots.length; i++) {
-            if (slots[i] != SpindexerSubsystem_State_new_Incremental.Ball.EMPTY) {
+            if (slots[i] != SpindexerSubsystem_Passive_State_new_Incremental.Ball.EMPTY) {
                 hasAnyBall = true;
                 break;
             }
@@ -489,8 +499,15 @@ public class TeleOp_pedro_pidf_Incre extends OpMode {
             wantIntake  = true;
         }
 
+        // Manual shooter spin-up override
+        if (shooterManualHold) {
+            wantShooter = true;
+            // optional: stop intake while manually spun up
+            // wantIntake = false;
+        }
+        
         shooterOn = wantShooter;
-        intakeOn  = true;
+        intakeOn  = wantIntake;
 
         // ===== SHOOTER UPDATE =====
         shooter.update(
@@ -541,18 +558,18 @@ public class TeleOp_pedro_pidf_Incre extends OpMode {
         double curRpm    = shooter.getVelocityRpm();        // or getCurrentRpmEstimate()
         double errRpm    = targetRpm - curRpm;
 
-        double targetTps = shooter.getTargetTps();
-        double velTps    = shooter.getVelocityTps();
-        double errTps    = targetTps - velTps;
+//        double targetTps = shooter.getTargetTps();
+//        double velTps    = shooter.getVelocityTps();
+//        double errTps    = targetTps - velTps;
 
 // ---- Panels graphs/text ----
         telemetryM.addData("shooter/target_rpm", targetRpm);
         telemetryM.addData("shooter/rpm", curRpm);
         telemetryM.addData("shooter/err_rpm", errRpm);
 
-        telemetryM.addData("shooter/target_tps", targetTps);
-        telemetryM.addData("shooter/vel_tps", velTps);
-        telemetryM.addData("shooter/err_tps", errTps);
+//        telemetryM.addData("shooter/target_tps", targetTps);
+//        telemetryM.addData("shooter/vel_tps", velTps);
+//        telemetryM.addData("shooter/err_tps", errTps);
 
         telemetryM.addData("shooter/power_cmd", shooter.getPowerCmd());
         telemetryM.addData("shooter/ff", shooter.getFF());
